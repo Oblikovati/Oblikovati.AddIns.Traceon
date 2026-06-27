@@ -80,6 +80,28 @@ func (e *Excitation) AddElectrostaticBoundary(names ...string) {
 	}
 }
 
+// AddMagnetostaticPotential assigns a fixed magnetostatic scalar potential (in A) to the named
+// electrode. Port of add_magnetostatic_potential. Panics if name is not an electrode.
+func (e *Excitation) AddMagnetostaticPotential(name string, potential float64) {
+	e.assign(name, entry{typ: radial.MagnetostaticPot, value: potential})
+}
+
+// AddMagnetizable assigns a relative magnetic permeability to the named electrode. Port of
+// add_magnetizable. Panics if name is not an electrode.
+func (e *Excitation) AddMagnetizable(name string, permeability float64) {
+	e.assign(name, entry{typ: radial.Magnetizable, value: permeability})
+}
+
+// AddMagnetostaticBoundary marks the named electrodes as magnetostatic boundaries (H·n = 0),
+// implemented — as upstream — as a magnetizable material with permeability zero, with normals
+// first made inward. Port of add_magnetostatic_boundary. Panics if a name is not an electrode.
+func (e *Excitation) AddMagnetostaticBoundary(names ...string) {
+	for _, name := range names {
+		e.m.EnsureInwardNormals(name)
+		e.AddMagnetizable(name, 0)
+	}
+}
+
 // Electrodes returns the electrode names present in the mesh (its physical groups).
 func (e *Excitation) Electrodes() []string {
 	names := make([]string, 0, len(e.m.PhysicalToLines))
@@ -95,6 +117,21 @@ func (e *Excitation) Electrodes() []string {
 // omitted. Feed the result straight into solver.SolveElectrostatic. Mirrors
 // ElectrostaticSolverRadial's active-element + right-hand-side construction.
 func (e *Excitation) Electrostatic() ([]radial.Line, []radial.ExcitationType, []float64) {
+	return e.activeElements(isElectrostatic)
+}
+
+// Magnetostatic returns the active magnetostatic BEM elements (fixed scalar potential and
+// magnetizable/boundary), in mesh-line order, ready for solver.SolveMagnetostatic. Current
+// rings and permanent magnets are not BEM matrix elements and are excluded. Mirrors
+// MagnetostaticSolverRadial's active-element selection.
+func (e *Excitation) Magnetostatic() ([]radial.Line, []radial.ExcitationType, []float64) {
+	return e.activeElements(isMagnetostaticBEM)
+}
+
+// activeElements collects the elements whose electrode's excitation type satisfies include, in
+// mesh-line order, with functional voltages evaluated at the element centre. Shared by the
+// Electrostatic and Magnetostatic builders.
+func (e *Excitation) activeElements(include func(radial.ExcitationType) bool) ([]radial.Line, []radial.ExcitationType, []float64) {
 	all := geometry.RadialLines(e.m) // 1:1 with e.m.Lines, preserving order
 	owner := e.lineOwners()
 
@@ -105,7 +142,7 @@ func (e *Excitation) Electrostatic() ([]radial.Line, []radial.ExcitationType, []
 	)
 	for i, line := range all {
 		ent, ok := e.byName[owner[i]]
-		if !ok || !isElectrostatic(ent.typ) {
+		if !ok || !include(ent.typ) {
 			continue
 		}
 		v := ent.value
@@ -143,4 +180,11 @@ func (e *Excitation) lineOwners() map[int]string {
 // Mirrors ExcitationType.is_electrostatic.
 func isElectrostatic(t radial.ExcitationType) bool {
 	return t == radial.VoltageFixed || t == radial.VoltageFun || t == radial.Dielectric
+}
+
+// isMagnetostaticBEM reports whether an excitation type is a magnetostatic BEM matrix element:
+// a fixed scalar potential or a magnetizable/boundary element. Current rings and permanent
+// magnets contribute through the pre-field, not the matrix, so they are excluded here.
+func isMagnetostaticBEM(t radial.ExcitationType) bool {
+	return t == radial.MagnetostaticPot || t == radial.Magnetizable
 }
