@@ -33,6 +33,7 @@ type fakeHost struct {
 	selRefs      []string                      // model.selection result
 	refBodies    []wire.BodyTopology           // model.referenceKeys per-body topology
 	attrStore    map[string]wire.AttributeInfo // per-target attributes ("target\x00name" → info)
+	sectionWires []wire.WirePolyline           // brep.sectionWithPlane result (nil → facet fallback)
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -50,6 +51,10 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		return json.Marshal(wire.BodyListResult{Bodies: bodies})
 	case wire.MethodBodyCalculateFacets:
 		return json.Marshal(h.facets)
+	case wire.MethodBrepSectionWithPlane:
+		return json.Marshal(wire.BrepWiresResult{Handle: 1, Wires: h.sectionWires})
+	case wire.MethodBrepDelete:
+		return json.Marshal(wire.OKResult{OK: true})
 	case wire.MethodDocumentsList:
 		return json.Marshal(wire.ListDocumentsResult{Documents: []wire.DocumentInfo{{ID: 1, Active: true}}})
 	case wire.MethodModelSelection:
@@ -142,6 +147,27 @@ func TestRunStudyDrivesPipeline(t *testing.T) {
 	}
 	if res.GraphicsClientID != graphicsClientID {
 		t.Errorf("GraphicsClientID = %q, want %q", res.GraphicsClientID, graphicsClientID)
+	}
+}
+
+// TestRunStudyViaExactSection runs the whole study through the EXACT brep-section meridian (the
+// #2 path): a solid-cylinder section folds to a capped meridian arc, which must solve and trace
+// without going singular — proving the exact loops feed the BEM pipeline end to end.
+func TestRunStudyViaExactSection(t *testing.T) {
+	h := cylinderHost()
+	h.sectionWires = []wire.WirePolyline{closedWire(
+		geom2d.Point2{1, 1}, geom2d.Point2{1, -1},
+		geom2d.Point2{-1, -1}, geom2d.Point2{-1, 1},
+	)}
+	res, err := NewEngine(h).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy via exact section: %v", err)
+	}
+	if !h.sawCall(wire.MethodBrepSectionWithPlane) {
+		t.Error("expected the study to use the exact brep section")
+	}
+	if res.ElementCount < 1 || res.RayCount == 0 {
+		t.Errorf("exact-section study produced no elements/rays: %d elems, %d rays", res.ElementCount, res.RayCount)
 	}
 }
 

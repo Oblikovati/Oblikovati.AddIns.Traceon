@@ -24,12 +24,12 @@ type profile struct {
 	loops [][]geom2d.Point2 // the meridian as one ordered (r, z) polyline (in loops[0])
 }
 
-// extractProfile derives the axisymmetric (r, z) meridian of a host body from its surface
-// facets: every facet vertex is mapped to (r = √(x²+z²), z = y) — its distance from the
-// optical (Y) axis and its axial position. The full cross-section boundary (outer wall, end
-// caps, and any inner bore) is recovered per axial band, so the aperture fields that focus
-// the beam are modelled — not just the outer silhouette. (A body's edge strokes are only its
-// rims, which collapse to points, so the facet boundary is used instead.)
+// extractProfile derives the axisymmetric (r, z) meridian of a host body. It first tries an EXACT
+// section — intersecting the body with the world XY plane (which contains the optical Y axis) and
+// folding the section wires onto the r ≥ 0 half-plane (see sectionMeridian) — and falls back to the
+// faceted axial-band envelope only when the section yields nothing usable. The surface facets are
+// computed regardless because they drive the axisymmetry guard (a box or bracket has no meaningful
+// meridian, so the study skips it rather than solving garbage).
 func (e *Engine) extractProfile(bodyIndex int) (*profile, error) {
 	facets, err := e.api.Body().CalculateFacets(wire.CalculateFacetsArgs{BodyIndex: bodyIndex, Tolerance: sectionTolerance})
 	if err != nil {
@@ -41,11 +41,33 @@ func (e *Engine) extractProfile(bodyIndex int) (*profile, error) {
 	if nonAxisymmetric(facets) {
 		return nil, fmt.Errorf("body %d is not axisymmetric about the Y axis (its cross-section radius varies with angle); Traceon simulates surfaces of revolution", bodyIndex)
 	}
+	if loops := e.exactMeridian(bodyIndex); len(loops) > 0 {
+		return &profile{loops: loops}, nil
+	}
 	loop := fullMeridian(facets.VertexCoordinates)
 	if len(loop) < 2 {
 		return nil, fmt.Errorf("body %d produced a degenerate (r,z) profile", bodyIndex)
 	}
 	return &profile{loops: [][]geom2d.Point2{loop}}, nil
+}
+
+// exactMeridian returns the brep-sectioned (r, z) meridian loops, or nil when the section is
+// unavailable or yields fewer than two points total (then extractProfile uses the facet envelope).
+// A section error is swallowed deliberately: an exact meridian is an accuracy upgrade, never a
+// requirement, so a body the kernel cannot section still solves via its facets.
+func (e *Engine) exactMeridian(bodyIndex int) [][]geom2d.Point2 {
+	loops, err := e.sectionMeridian(bodyIndex)
+	if err != nil {
+		return nil
+	}
+	points := 0
+	for _, l := range loops {
+		points += len(l)
+	}
+	if points < 2 {
+		return nil
+	}
+	return loops
 }
 
 // azimuthSectors divides the revolution into this many angular bins for the axisymmetry test.
