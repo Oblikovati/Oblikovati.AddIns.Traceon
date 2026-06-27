@@ -206,6 +206,7 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 		case isCoilBody(b, currents, params.coilCurrent, &coils, prof):
 		case isMagnetBody(b, magnetisations, params.magnetisation, &magnets, prof):
 		case isIronBody(b, permeabilities, params.permeability, &irons, prof):
+		case e.classifyByMaterial(b, &magnets, &irons, prof):
 		default:
 			elecProfs = append(elecProfs, prof)
 			elecIdx = append(elecIdx, b.Index)
