@@ -50,6 +50,17 @@ overlay — the potential heatmap and the particle trajectories — into the vie
 The dockable **Traceon Electron Optics** panel (electrode voltage / beam energy / ray count +
 Run button) is visible on the right.
 
+### Magnetostatic (current coils)
+
+A solid body is treated as a current **coil** (rather than a voltage electrode) when it carries
+a current in the `traceon/currents` attribute or its name contains "coil". Its (r,z)
+cross-section is triangulated into current rings carrying a uniform current density (total
+current / area), and the beam is traced through the combined field with the Lorentz force
+`a = q/m·(E + μ₀·v×H)`. Live: a revolved ring renamed "Coil1" energised at 1000 A acts as a
+magnetic lens — the beam visibly converges as it passes through the coil:
+
+![coil live](validation/testdata/coil_live.png)
+
 ### Procedure
 
 The add-in is driven from the running application; the study is `Traceon.RunStudy` (a ribbon

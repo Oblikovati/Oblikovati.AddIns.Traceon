@@ -13,6 +13,7 @@ import (
 	"oblikovati.org/api/wire"
 
 	"oblikovati.org/traceon/core/geom2d"
+	"oblikovati.org/traceon/core/geom3d"
 )
 
 // fakeHost is a named fake HostCaller (no live host): it answers the wire methods a study
@@ -22,7 +23,9 @@ type fakeHost struct {
 	calls        []string
 	failOn       string // method to fail, for error-path tests ("" = none)
 	facets       wire.FacetSetResult
-	voltagesJSON string // traceon/voltages attribute payload ("" = unset)
+	bodies       []wire.BodyInfo // nil → one solid electrode body
+	voltagesJSON string          // traceon/voltages attribute payload ("" = unset)
+	currentsJSON string          // traceon/currents attribute payload ("" = unset)
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -33,17 +36,27 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 	}
 	switch method {
 	case wire.MethodBodyList:
-		return json.Marshal(wire.BodyListResult{Bodies: []wire.BodyInfo{{Index: 0, Name: "Solid1", Solid: true, Key: "k0"}}})
+		bodies := h.bodies
+		if bodies == nil {
+			bodies = []wire.BodyInfo{{Index: 0, Name: "Solid1", Solid: true, Key: "k0"}}
+		}
+		return json.Marshal(wire.BodyListResult{Bodies: bodies})
 	case wire.MethodBodyCalculateFacets:
 		return json.Marshal(h.facets)
 	case wire.MethodDocumentsList:
 		return json.Marshal(wire.ListDocumentsResult{Documents: []wire.DocumentInfo{{ID: 1, Active: true}}})
 	case wire.MethodAttributesGet:
-		if h.voltagesJSON == "" {
+		var args wire.GetAttributeArgs
+		_ = json.Unmarshal(req, &args)
+		payload := h.voltagesJSON
+		if args.Name == attrCurrents {
+			payload = h.currentsJSON
+		}
+		if payload == "" {
 			return json.Marshal(wire.AttributeResult{Found: false})
 		}
 		return json.Marshal(wire.AttributeResult{Found: true, Attribute: wire.AttributeInfo{
-			Set: attrSet, Name: attrVoltages, Value: types.StringVariant(h.voltagesJSON)}})
+			Set: attrSet, Name: args.Name, Value: types.StringVariant(payload)}})
 	case wire.MethodClientGraphicsSet:
 		_ = json.Unmarshal(req, &h.lastGraph)
 		return []byte("{}"), nil
@@ -174,6 +187,69 @@ func TestStudyReportsElectrodeCount(t *testing.T) {
 	}
 	if res.ElectrodeCount != 1 {
 		t.Errorf("ElectrodeCount = %d, want 1", res.ElectrodeCount)
+	}
+}
+
+// ringHost is a fake whose single body is a current coil: a rectangular cross-section ring at
+// r∈[2,2.5] cm, y∈[-0.25,0.25] cm, named so isCoil treats it as a coil.
+func ringHost() *fakeHost {
+	var coords []float64
+	for _, r := range []float64{2.0, 2.25, 2.5} {
+		for _, y := range []float64{-0.25, 0, 0.25} {
+			// place around the ring at a few azimuths so √(x²+z²)=r
+			for _, ang := range []float64{0, 1.57, 3.14, 4.71} {
+				coords = append(coords, r*math.Cos(ang), y, r*math.Sin(ang))
+			}
+		}
+	}
+	return &fakeHost{
+		facets: wire.FacetSetResult{VertexCount: len(coords) / 3, VertexCoordinates: coords},
+		bodies: []wire.BodyInfo{{Index: 0, Name: "Coil1", Solid: true, Key: "c0"}},
+	}
+}
+
+// TestCoilStudy checks a coil body is recognised, produces a current field, and the study
+// reports it. The on-axis magnetic field of the energised coil must be non-zero (a current
+// produces an axial field), confirming the magnetostatic path is wired through the engine.
+func TestCoilStudy(t *testing.T) {
+	res, err := NewEngine(ringHost()).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.CoilCount != 1 {
+		t.Errorf("CoilCount = %d, want 1", res.CoilCount)
+	}
+	if res.ElectrodeCount != 0 {
+		t.Errorf("ElectrodeCount = %d, want 0 (the body is a coil)", res.ElectrodeCount)
+	}
+}
+
+// TestBuildCoilCharges checks the coil current field is non-zero on the axis at the coil's
+// midplane (an energised loop produces an axial field there).
+func TestBuildCoilCharges(t *testing.T) {
+	h := ringHost()
+	prof, err := NewEngine(h).extractProfile(0)
+	if err != nil {
+		t.Fatalf("extractProfile: %v", err)
+	}
+	cc := buildCoilCharges([]coil{{prof: prof, current: 1000}})
+	if len(cc.Currents) == 0 {
+		t.Fatal("no current rings built")
+	}
+	hz := cc.CurrentFieldAt(geom3d.Vec3{0, 0, 0}) // on-axis, mid-plane (metres)
+	if hz[2] == 0 {
+		t.Error("expected a non-zero on-axis axial field from the coil")
+	}
+}
+
+// TestCoilByCurrentAttribute checks the traceon/currents attribute marks a body as a coil.
+func TestCoilByCurrentAttribute(t *testing.T) {
+	amps, ok := isCoil(3, "Solid7", map[int]float64{3: 2.5}, 1000)
+	if !ok || amps != 2.5 {
+		t.Errorf("isCoil(attr) = (%v, %v), want (2.5, true)", amps, ok)
+	}
+	if _, ok := isCoil(0, "Plain", nil, 1000); ok {
+		t.Error("a plain body should not be a coil")
 	}
 }
 
