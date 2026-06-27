@@ -25,13 +25,14 @@ type HostCaller interface {
 
 // studyParams are the user-editable simulation parameters (set from the dockable panel).
 type studyParams struct {
-	voltage  float64 // potential applied to the electrode body (volts)
-	energyEV float64 // initial kinetic energy of the traced beam (eV)
-	numRays  int     // number of parallel rays launched
+	voltage     float64 // potential biasing the central electrode (volts)
+	energyEV    float64 // initial kinetic energy of the traced beam (eV)
+	numRays     int     // number of parallel rays launched
+	coilCurrent float64 // default current for coil bodies (amperes)
 }
 
 func defaultParams() studyParams {
-	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7}
+	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000}
 }
 
 // Engine runs electron-optics studies against a live host.
@@ -56,7 +57,8 @@ const RunStudyCommandID = "Traceon.RunStudy"
 // studySummary formats the one-line status reported after a completed study, including the
 // axial focus when the beam crosses the optical axis.
 func studySummary(res *StudyResult) string {
-	s := fmt.Sprintf("Traceon: %d electrode(s), %d elements, %d rays", res.ElectrodeCount, res.ElementCount, res.RayCount)
+	s := fmt.Sprintf("Traceon: %d electrode(s), %d coil(s), %d elements, %d rays",
+		res.ElectrodeCount, res.CoilCount, res.ElementCount, res.RayCount)
 	if !math.IsNaN(res.FocusZ) {
 		s += fmt.Sprintf(" — focus z = %.3f cm", res.FocusZ)
 	}

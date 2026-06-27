@@ -31,6 +31,7 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 			client.PanelValueEditor("voltage", "Central electrode (V)", strconv.FormatFloat(p.voltage, 'g', -1, 64)),
 			client.PanelValueEditor("energy", "Beam energy (eV)", strconv.FormatFloat(p.energyEV, 'g', -1, 64)),
 			client.PanelValueEditor("rays", "Number of rays", strconv.Itoa(p.numRays)),
+			client.PanelValueEditor("coil_current", "Coil current (A)", strconv.FormatFloat(p.coilCurrent, 'g', -1, 64)),
 			client.PanelSeparator(),
 			client.PanelButton("run", "Run Electron-Optics Study", RunStudyCommandID),
 		},
@@ -50,6 +51,8 @@ func (e *Engine) applyPanelEdit(controlID, value string) {
 		if n := int(simNum(value, float64(e.params.numRays))); n > 0 {
 			e.params.numRays = n
 		}
+	case "coil_current":
+		e.params.coilCurrent = simNum(value, e.params.coilCurrent)
 	}
 }
 

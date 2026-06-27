@@ -20,11 +20,19 @@ const graphicsClientID = "com.oblikovati.traceon.study"
 const potentialGrid = 40
 
 // renderNodes assembles the study overlay (all coordinates in the host DB unit, cm): the
-// potential heatmap (drawn underneath), each electrode profile, and the traced trajectories.
-// The BEM field and the rays are in metres, so positions are scaled back by metresToCm.
-func renderNodes(electrodes []electrode, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
-	nodes := []wire.GraphicsNode{potentialNode(electrodes, bem)}
-	nodes = append(nodes, electrodeNode(electrodes))
+// potential heatmap (drawn underneath), the electrode and coil profiles, and the traced
+// trajectories. The BEM field and the rays are in metres, so positions are scaled by metresToCm.
+func renderNodes(electrodes []electrode, coils []coil, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
+	var nodes []wire.GraphicsNode
+	if len(electrodes) > 0 {
+		nodes = append(nodes, potentialNode(electrodes, bem), electrodeNode(electrodes))
+	}
+	if lines, ok := coilNode(coils); ok {
+		nodes = append(nodes, wire.GraphicsNode{Id: "traceon.coils", Primitives: []wire.GraphicsPrimitive{{
+			Kind: string(types.GraphicsLines), Coordinates: lines.coords, Indices: lines.indices,
+			Color: []float32{0.85, 0.45, 0.2, 1}, OnTop: true, // copper
+		}}})
+	}
 	nodes = append(nodes, trajectoryNodes(rays)...)
 	return nodes
 }
