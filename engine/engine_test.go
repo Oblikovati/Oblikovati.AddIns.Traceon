@@ -27,6 +27,7 @@ type fakeHost struct {
 	voltagesJSON string          // traceon/voltages attribute payload ("" = unset)
 	currentsJSON string          // traceon/currents attribute payload ("" = unset)
 	magnetsJSON  string          // traceon/magnets attribute payload ("" = unset)
+	permJSON     string          // traceon/permeability attribute payload ("" = unset)
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -55,6 +56,8 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 			payload = h.currentsJSON
 		case attrMagnets:
 			payload = h.magnetsJSON
+		case attrPermeability:
+			payload = h.permJSON
 		}
 		if payload == "" {
 			return json.Marshal(wire.AttributeResult{Found: false})
@@ -301,6 +304,52 @@ func TestMagnetByAttribute(t *testing.T) {
 	m, ok := isMagnet(2, "Block", map[int]float64{2: 5e5}, 1e6)
 	if !ok || m != 5e5 {
 		t.Errorf("isMagnet(attr) = (%v, %v), want (5e5, true)", m, ok)
+	}
+}
+
+// ironHost is a fake whose single body is magnetizable iron (named so isIron matches), shaped
+// like the ring so it sections cleanly.
+func ironHost() *fakeHost {
+	h := ringHost()
+	h.bodies = []wire.BodyInfo{{Index: 0, Name: "Iron1", Solid: true, Key: "i0"}}
+	return h
+}
+
+// TestIronStudy checks a magnetizable iron body is recognised and the study reports it. With
+// no coils or magnets the pre-field is zero, so the iron's induced charges are zero, but the
+// classification and the magnetostatic solve path must run without error.
+func TestIronStudy(t *testing.T) {
+	res, err := NewEngine(ironHost()).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.IronCount != 1 || res.ElectrodeCount != 0 {
+		t.Errorf("counts = (e=%d,iron=%d), want (0,1)", res.ElectrodeCount, res.IronCount)
+	}
+}
+
+// TestIronByAttribute checks the traceon/permeability attribute marks a body as iron.
+func TestIronByAttribute(t *testing.T) {
+	mu, ok := isIron(4, "Plate", map[int]float64{4: 4000}, 1000)
+	if !ok || mu != 4000 {
+		t.Errorf("isIron(attr) = (%v, %v), want (4000, true)", mu, ok)
+	}
+	if _, ok := isIron(0, "Plain", nil, 1000); ok {
+		t.Error("a plain body should not be iron")
+	}
+}
+
+// TestCombineCharges checks two charge sets concatenate their charges and buffers.
+func TestCombineCharges(t *testing.T) {
+	prof, err := NewEngine(ringHost()).extractProfile(0)
+	if err != nil {
+		t.Fatalf("extractProfile: %v", err)
+	}
+	a := buildMagnetCharges([]magnet{{prof: prof, magnetisation: 1e6}})
+	combined := combineCharges(a, a)
+	if len(combined.Charges) != 2*len(a.Charges) || len(combined.Jac) != 2*len(a.Jac) {
+		t.Errorf("combined lengths = (%d charges, %d jac), want double of %d/%d",
+			len(combined.Charges), len(combined.Jac), len(a.Charges), len(a.Jac))
 	}
 }
 

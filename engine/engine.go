@@ -30,11 +30,12 @@ type studyParams struct {
 	numRays       int     // number of parallel rays launched
 	coilCurrent   float64 // default current for coil bodies (amperes)
 	magnetisation float64 // default axial magnetisation for magnet bodies (A/m)
+	permeability  float64 // default relative permeability for iron bodies
 	fastTrace     bool    // trace through the fast axial-series interpolation of the field
 }
 
 func defaultParams() studyParams {
-	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6}
+	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6, permeability: 1000}
 }
 
 // Engine runs electron-optics studies against a live host.
@@ -59,8 +60,8 @@ const RunStudyCommandID = "Traceon.RunStudy"
 // studySummary formats the one-line status reported after a completed study, including the
 // axial focus when the beam crosses the optical axis.
 func studySummary(res *StudyResult) string {
-	s := fmt.Sprintf("Traceon: %d electrode(s), %d coil(s), %d magnet(s), %d elements, %d rays",
-		res.ElectrodeCount, res.CoilCount, res.MagnetCount, res.ElementCount, res.RayCount)
+	s := fmt.Sprintf("Traceon: %d electrode(s), %d coil(s), %d magnet(s), %d iron, %d elements, %d rays",
+		res.ElectrodeCount, res.CoilCount, res.MagnetCount, res.IronCount, res.ElementCount, res.RayCount)
 	if !math.IsNaN(res.FocusZ) {
 		s += fmt.Sprintf(" — focus z = %.3f cm", res.FocusZ)
 	}

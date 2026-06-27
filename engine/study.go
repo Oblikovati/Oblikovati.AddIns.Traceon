@@ -8,6 +8,8 @@ import (
 	"math"
 	"strconv"
 
+	"oblikovati.org/api/wire"
+
 	"oblikovati.org/traceon/core/constants"
 	"oblikovati.org/traceon/core/field"
 	"oblikovati.org/traceon/core/geom2d"
@@ -22,6 +24,7 @@ type StudyResult struct {
 	ElectrodeCount   int
 	CoilCount        int
 	MagnetCount      int
+	IronCount        int
 	ElementCount     int
 	RayCount         int
 	FocusZ           float64 // axial focus position (cm), NaN if the beam does not cross the axis
@@ -84,17 +87,18 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	params := e.params
 	e.mu.Unlock()
 
-	electrodes, coils, magnets, err := e.collectBodies(params)
+	electrodes, coils, magnets, irons, err := e.collectBodies(params)
 	if err != nil {
 		return nil, err
 	}
-	if len(electrodes) == 0 && len(coils) == 0 && len(magnets) == 0 {
-		return nil, fmt.Errorf("no solid bodies could be sectioned into electrodes, coils, or magnets")
+	if len(electrodes)+len(coils)+len(magnets)+len(irons) == 0 {
+		return nil, fmt.Errorf("no solid bodies could be sectioned into electrodes, coils, magnets, or iron")
 	}
 
 	// Electrostatic charges from the electrode boundaries; magnetic current rings from the
-	// coils; magnetostatic surface charges from the permanent magnets — combined into one
-	// field the beam is traced through (Lorentz force E + μ₀ v×H).
+	// coils; magnetostatic surface charges from the permanent magnets; and, if magnetizable
+	// iron is present, the magnetisation it develops in response to that field. All combined
+	// into one field the beam is traced through (Lorentz force E + μ₀ v×H).
 	var elec solver.EffectivePointCharges
 	lines, types, values := assembleElements(electrodes)
 	if len(lines) > 0 {
@@ -105,20 +109,26 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	}
 	current := buildCoilCharges(coils)
 	mag := buildMagnetCharges(magnets)
+	if len(irons) > 0 {
+		mag, err = solveIronResponse(mag, current, irons)
+		if err != nil {
+			return nil, fmt.Errorf("solve magnetizable iron: %w", err)
+		}
+	}
 	bem := field.NewFieldRadialBEMFull(elec, mag, current)
 
 	// Electrostatic field evaluator: the direct boundary integral, or — when fast tracing is
 	// on and there are electrodes — the fast axial-series interpolation (accurate near the axis).
 	eEval := bem.FieldAtPoint
 	if params.fastTrace && len(electrodes) > 0 {
-		if fa, ferr := e.axialField(elec, electrodes, coils, magnets); ferr == nil {
+		if fa, ferr := e.axialField(elec, electrodes, coils, magnets, irons); ferr == nil {
 			eEval = fa.FieldAtPoint
 		}
 	}
 
-	rays := e.traceBeam(eEval, bem, electrodes, coils, magnets, params)
+	rays := e.traceBeam(eEval, bem, electrodes, coils, magnets, irons, params)
 
-	nodes := renderNodes(electrodes, coils, magnets, bem, rays)
+	nodes := renderNodes(electrodes, coils, magnets, irons, bem, rays)
 	if err := e.pushGraphics(nodes); err != nil {
 		return nil, err
 	}
@@ -126,6 +136,7 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 		ElectrodeCount:   len(electrodes),
 		CoilCount:        len(coils),
 		MagnetCount:      len(magnets),
+		IronCount:        len(irons),
 		ElementCount:     len(lines),
 		RayCount:         len(rays),
 		FocusZ:           focusZcm(rays),
@@ -133,27 +144,42 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	}, nil
 }
 
+// solveIronResponse solves for the magnetisation induced in the magnetizable iron by the
+// pre-existing field (permanent magnets + coil currents) and returns the combined
+// magnetostatic surface charges (permanent magnets + induced iron).
+func solveIronResponse(pm solver.EffectivePointCharges, current solver.CurrentCharges, irons []iron) (solver.EffectivePointCharges, error) {
+	preBem := field.NewFieldRadialBEMFull(solver.EffectivePointCharges{}, pm, current)
+	preField := func(p geom3d.Vec3) geom3d.Vec3 {
+		h := preBem.MagnetostaticFieldAtPoint(geom2d.Vertex{p[0], p[1], p[2]})
+		return geom3d.Vec3{h[0], h[1], h[2]}
+	}
+	ironCharges, err := buildIronCharges(irons, preField)
+	if err != nil {
+		return solver.EffectivePointCharges{}, err
+	}
+	return combineCharges(pm, ironCharges), nil
+}
+
 // collectBodies sections every solid body in the active part and sorts each into an electrode
-// (voltage boundary) or a current coil. A body is a coil if it carries a current in the
-// traceon/currents attribute or its name contains "coil"; otherwise it is an electrode.
-//
-// Electrode voltages come from traceon/voltages (a JSON {bodyIndex: volts} map); when that is
-// unset, the einzel convention applies — the panel voltage biases the axially central
-// electrode, the others are grounded. Coil currents come from traceon/currents, else the
-// panel coil current.
-func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magnet, error) {
+// (voltage boundary), a current coil, a permanent magnet, or magnetizable iron, by attribute
+// or name convention. Electrode voltages come from traceon/voltages (else the einzel
+// convention biases the central electrode); coil currents, magnetisations and permeabilities
+// from their attributes, else the panel defaults.
+func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magnet, []iron, error) {
 	list, err := e.api.Body().List()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("list bodies: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("list bodies: %w", err)
 	}
 	currents := e.coilCurrents()
 	magnetisations := e.magnetMagnetisations()
+	permeabilities := e.ironPermeabilities()
 	voltages := e.electrodeVoltages()
 
 	var elecProfs []*profile
 	var elecIdx []int
 	var coils []coil
 	var magnets []magnet
+	var irons []iron
 	for _, b := range list.Bodies {
 		if !b.Solid {
 			continue
@@ -162,16 +188,14 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 		if err != nil {
 			continue // a body that cannot be sectioned (e.g. non-axisymmetric) is skipped
 		}
-		if amps, ok := isCoil(b.Index, b.Name, currents, params.coilCurrent); ok {
-			coils = append(coils, coil{prof: prof, current: amps})
-			continue
+		switch {
+		case isCoilBody(b, currents, params.coilCurrent, &coils, prof):
+		case isMagnetBody(b, magnetisations, params.magnetisation, &magnets, prof):
+		case isIronBody(b, permeabilities, params.permeability, &irons, prof):
+		default:
+			elecProfs = append(elecProfs, prof)
+			elecIdx = append(elecIdx, b.Index)
 		}
-		if m, ok := isMagnet(b.Index, b.Name, magnetisations, params.magnetisation); ok {
-			magnets = append(magnets, magnet{prof: prof, magnetisation: m})
-			continue
-		}
-		elecProfs = append(elecProfs, prof)
-		elecIdx = append(elecIdx, b.Index)
 	}
 
 	central := -1
@@ -189,7 +213,34 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 		}
 		electrodes[i] = electrode{prof: prof, voltage: v}
 	}
-	return electrodes, coils, magnets, nil
+	return electrodes, coils, magnets, irons, nil
+}
+
+// isCoilBody appends prof as a coil when b is a coil, returning whether it matched.
+func isCoilBody(b wire.BodyInfo, currents map[int]float64, def float64, coils *[]coil, prof *profile) bool {
+	if amps, ok := isCoil(b.Index, b.Name, currents, def); ok {
+		*coils = append(*coils, coil{prof: prof, current: amps})
+		return true
+	}
+	return false
+}
+
+// isMagnetBody appends prof as a magnet when b is a magnet, returning whether it matched.
+func isMagnetBody(b wire.BodyInfo, magnetisations map[int]float64, def float64, magnets *[]magnet, prof *profile) bool {
+	if m, ok := isMagnet(b.Index, b.Name, magnetisations, def); ok {
+		*magnets = append(*magnets, magnet{prof: prof, magnetisation: m})
+		return true
+	}
+	return false
+}
+
+// isIronBody appends prof as iron when b is magnetizable, returning whether it matched.
+func isIronBody(b wire.BodyInfo, perms map[int]float64, def float64, irons *[]iron, prof *profile) bool {
+	if mu, ok := isIron(b.Index, b.Name, perms, def); ok {
+		*irons = append(*irons, iron{prof: prof, permeability: mu})
+		return true
+	}
+	return false
 }
 
 // centralElectrode returns the index of the electrode whose axial mid-point is closest to
@@ -281,8 +332,8 @@ const axialSamples = 200
 
 // axialField builds the fast axial-series interpolation of the electrostatic field over the
 // whole trace span (geometry + downstream drift), in metres.
-func (e *Engine) axialField(elec solver.EffectivePointCharges, electrodes []electrode, coils []coil, magnets []magnet) (field.FieldRadialAxial, error) {
-	_, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets)
+func (e *Engine) axialField(elec solver.EffectivePointCharges, electrodes []electrode, coils []coil, magnets []magnet, irons []iron) (field.FieldRadialAxial, error) {
+	_, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets, irons)
 	zMin, zMax := zMinCm*cmToMetres, zMaxCm*cmToMetres
 	drift := driftFactor * (zMax - zMin)
 	return field.NewFieldRadialAxial(elec, zMin-boundsMargin, zMax+drift, axialSamples)
@@ -291,8 +342,8 @@ func (e *Engine) axialField(elec solver.EffectivePointCharges, electrodes []elec
 // electrostaticEval evaluates the electrostatic field at an (x, y, z) point (cm-free, metres).
 type electrostaticEval func(geom2d.Vertex) geom2d.Vertex
 
-func (e *Engine) traceBeam(eEval electrostaticEval, bem field.FieldRadialBEM, electrodes []electrode, coils []coil, magnets []magnet, params studyParams) [][]tracing.State {
-	rMaxCm, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets)
+func (e *Engine) traceBeam(eEval electrostaticEval, bem field.FieldRadialBEM, electrodes []electrode, coils []coil, magnets []magnet, irons []iron, params studyParams) [][]tracing.State {
+	rMaxCm, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets, irons)
 	rMax, zMin, zMax := rMaxCm*cmToMetres, zMinCm*cmToMetres, zMaxCm*cmToMetres
 	// Trace through a generous downstream drift region so the focus (which forms past the
 	// lens) is captured. The radial bound is loose so a converging ray is not clipped early.
@@ -344,11 +395,15 @@ func combinedExtent(electrodes []electrode) (rMax, zMin, zMax float64) {
 }
 
 // studyExtent returns the (r, z) bounding box (cm) spanning every electrode, coil, and magnet.
-func studyExtent(electrodes []electrode, coils []coil, magnets []magnet) (rMax, zMin, zMax float64) {
+func studyExtent(electrodes []electrode, coils []coil, magnets []magnet, irons []iron) (rMax, zMin, zMax float64) {
 	er, ez0, ez1 := combinedExtent(electrodes)
 	cr, cz0, cz1 := coilExtent(coils)
 	mr, mz0, mz1 := magnetExtent(magnets)
-	return math.Max(er, math.Max(cr, mr)), math.Min(ez0, math.Min(cz0, mz0)), math.Max(ez1, math.Max(ez1, math.Max(cz1, mz1)))
+	ir, iz0, iz1 := ironExtent(irons)
+	rMax = math.Max(er, math.Max(cr, math.Max(mr, ir)))
+	zMin = math.Min(ez0, math.Min(cz0, math.Min(mz0, iz0)))
+	zMax = math.Max(ez1, math.Max(cz1, math.Max(mz1, iz1)))
+	return rMax, zMin, zMax
 }
 
 // focusZcm returns the axial (z) focus of the ray bundle in cm, or NaN if it cannot be
