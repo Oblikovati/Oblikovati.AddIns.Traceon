@@ -488,3 +488,47 @@ func TestPanelEditUpdatesParams(t *testing.T) {
 		t.Errorf("numRays = %d, want 11", e.params.numRays)
 	}
 }
+
+// boxFacets builds the facet set of a unit cube spanning x,y,z ∈ [-1,1] (8 corner vertices, 6
+// quad faces) — a body that is NOT a surface of revolution about Y.
+func boxFacets() wire.FacetSetResult {
+	v := []float64{
+		-1, -1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1, // bottom (y=-1)
+		-1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1, // top (y=1)
+	}
+	faces := [][]int{
+		{0, 1, 2, 3}, {4, 5, 6, 7}, // y caps
+		{0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}, // sides (parallel to Y)
+	}
+	var idx, counts []int
+	for _, f := range faces {
+		idx = append(idx, f...)
+		counts = append(counts, len(f))
+	}
+	return wire.FacetSetResult{VertexCount: 8, VertexCoordinates: v, VertexIndices: idx, IndexCountPerFace: counts}
+}
+
+// TestNonAxisymmetricBox checks a box is detected as non-axisymmetric (its faces dip to the
+// inscribed radius at the edge midpoints while the corners stay at √2).
+func TestNonAxisymmetricBox(t *testing.T) {
+	if !nonAxisymmetric(boxFacets()) {
+		t.Error("a box should be detected as non-axisymmetric")
+	}
+}
+
+// TestAxisymmetricCylinderAccepted checks the revolved cylinder host's facets pass the check.
+func TestAxisymmetricCylinderAccepted(t *testing.T) {
+	h := cylinderHost()
+	if nonAxisymmetric(h.facets) {
+		t.Error("an axisymmetric cylinder was wrongly rejected")
+	}
+}
+
+// TestExtractProfileRejectsBox checks sectioning a box returns an error instead of garbage.
+func TestExtractProfileRejectsBox(t *testing.T) {
+	h := ringHost()
+	h.facets = boxFacets()
+	if _, err := NewEngine(h).extractProfile(0); err == nil {
+		t.Error("extractProfile accepted a non-axisymmetric box")
+	}
+}
