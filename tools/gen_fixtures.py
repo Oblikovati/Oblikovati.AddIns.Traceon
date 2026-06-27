@@ -583,6 +583,60 @@ def _magnetostatic() -> dict:
     }
 
 
+@fixture("geometry", "mesher")
+def _mesher() -> dict:
+    """Parametric-mesher golden: discretize_path sample parameters and the points + line
+    index arrays produced by Path.mesh for representative radial paths (flat and curved
+    line4, named with outward-normal orientation). The Go port must reproduce the post-
+    deduplication point ordering and the integer line connectivity exactly."""
+    import numpy as np
+    from traceon.geometry import Path, discretize_path
+
+    def mesh_case(path, **kw):
+        m = path.mesh(**kw)
+        return {
+            "points": m.points.tolist(),
+            "lines": m.lines.astype(int).tolist(),
+        }
+
+    cases = []
+
+    # 1. Straight radial line r=1, z:0->2, flat, mesh_size=0.5.
+    cases.append({
+        "name": "line_flat",
+        **mesh_case(Path.line([1., 0., 0.], [1., 0., 2.]), mesh_size=0.5),
+    })
+    # 2. Same line, higher-order (line4), mesh_size=2.0.
+    cases.append({
+        "name": "line_line4",
+        **mesh_case(Path.line([1., 0., 0.], [1., 0., 2.]), mesh_size=2.0, higher_order=True),
+    })
+    # 3. Quarter arc r=2 in the xz meridian plane, flat, mesh_size=1.0.
+    cases.append({
+        "name": "arc_flat",
+        **mesh_case(Path.arc([0., 0., 0.], [2., 0., 0.], [0., 0., 2.]), mesh_size=1.0),
+    })
+    # 4. Closed rectangle electrode, curved, NAMED so ensure_outward_normals runs.
+    cases.append({
+        "name": "rect_named_line4",
+        **mesh_case(Path.rectangle_xz(0.5, 1.0, -0.5, 0.5),
+                    mesh_size=0.5, higher_order=True, name="rect"),
+    })
+    # 5. Aperture electrode (open three-sided), flat.
+    cases.append({
+        "name": "aperture_flat",
+        **mesh_case(Path.aperture(0.5, 0.3, 1.5, z=0.0), mesh_size=0.4),
+    })
+
+    # discretize_path sample-parameter arrays (membership + exact values).
+    disc = {
+        "basic": list(discretize_path(10., [3.33, 5., 9.], 1.)),
+        "line4_factor3": list(discretize_path(2., [], 2.0, N_factor=3)),
+    }
+
+    return {"cases": cases, "discretize": disc}
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
