@@ -382,6 +382,53 @@ def _field() -> dict:
     }
 
 
+@fixture("tracing", "tracing")
+def _tracing() -> dict:
+    """A full RKF45 trajectory through a real radial BEM field, to verify the tracer and
+    the field evaluation compose correctly against upstream over hundreds of steps."""
+    import numpy as np
+    import traceon.backend as B
+    import traceon.field as F
+    import traceon.tracing as T
+
+    def line4(r0, z0, r1, z1):
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    lines = np.array([line4(1.0, -0.5, 1.0, 0.5), line4(1.0, 0.5, 1.0, 1.5), line4(1.0, -1.5, 1.0, -0.5)])
+    n = len(lines)
+    types = np.array([1, 1, 1], dtype=np.uint8)
+    values = np.array([1.0, 0.5, 0.5])
+    jac, pos = B.fill_jacobian_buffer_radial(lines)
+    matrix = np.zeros((n, n))
+    B.fill_matrix_radial(matrix, lines, types, values, jac, pos, 0, n - 1)
+    for i in range(n):
+        matrix[i, i] = B.self_potential_radial(lines[i])
+    charges = np.linalg.solve(matrix, values)
+
+    field = F.FieldRadialBEM(electrostatic_point_charges=F.EffectivePointCharges(charges, jac, pos))
+    bounds = ((-2.0, 2.0), (-2.0, 2.0), (-2.0, 2.0))
+    tracer = T.Tracer(field, bounds)
+
+    energy_eV = 100.0
+    p0 = [0.05, 0.0, -1.9]
+    v0 = T.velocity_vec(energy_eV, [0, 0, 1])
+    times, positions = tracer(np.array(p0), v0)
+
+    return {
+        "lines": lines.tolist(),
+        "charges": charges.tolist(),
+        "energy_eV": energy_eV,
+        "p0": p0,
+        "atol": 1e-8,
+        "charge_over_mass": float(-1.602176634e-19 / 9.1093837139e-31),
+        "bounds": [list(b) for b in bounds],
+        "times": times.tolist(),
+        "positions": positions.tolist(),
+    }
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
