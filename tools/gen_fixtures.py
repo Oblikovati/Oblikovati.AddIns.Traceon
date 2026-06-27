@@ -637,6 +637,37 @@ def _mesher() -> dict:
     return {"cases": cases, "discretize": disc}
 
 
+@fixture("geometry", "surface_mesh")
+def _surface_mesh() -> dict:
+    """Surface-mesher golden: the points + triangle index arrays produced by meshing a disk
+    cross-section (a radial current coil's meridian) with the adaptive quad→triangle mesher.
+    The Go port must reproduce the post-deduplication point ordering exactly; triangles are
+    compared as vertex-index sets (winding may differ from the outward-normal reorientation)."""
+    import numpy as np
+    from traceon.geometry import Surface
+
+    def mesh_case(surface, mesh_size):
+        m = surface.mesh(mesh_size=mesh_size)
+        return {
+            "points": m.points.tolist(),
+            "triangles": m.triangles.astype(int).tolist(),
+        }
+
+    # A flat rectangular plate with a breakpoint in each direction → four sub-sections, so the
+    # mesher's edge-welding path (abutting section grids) is exercised, not just single disks.
+    plate = Surface(lambda u, v: np.array([u, 0.0, v]), 2.0, 1.0, [1.0], [0.5], "plate")
+
+    cases = [
+        # The exact coil cross-section from validation/two_current_coils.py.
+        {"name": "disk_coil", **mesh_case(Surface.disk_xz(10e-3, 5e-3, 1e-3), 0.25e-3)},
+        # A coarser disk at the origin, to cover a different size regime.
+        {"name": "disk_origin", **mesh_case(Surface.disk_xz(0.0, 0.0, 1.0), 0.5)},
+        # Multi-section plate (covers section welding).
+        {"name": "plate_sections", **mesh_case(plate, 0.5)},
+    ]
+    return {"cases": cases}
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
