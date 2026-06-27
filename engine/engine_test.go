@@ -23,12 +23,15 @@ type fakeHost struct {
 	calls        []string
 	failOn       string // method to fail, for error-path tests ("" = none)
 	facets       wire.FacetSetResult
-	bodies       []wire.BodyInfo // nil → one solid electrode body
-	voltagesJSON string          // traceon/voltages attribute payload ("" = unset)
-	currentsJSON string          // traceon/currents attribute payload ("" = unset)
-	magnetsJSON  string          // traceon/magnets attribute payload ("" = unset)
-	permJSON     string          // traceon/permeability attribute payload ("" = unset)
-	materials    map[string]wire.MaterialInfo // id → material, for materials.get
+	bodies       []wire.BodyInfo               // nil → one solid electrode body
+	voltagesJSON string                        // traceon/voltages attribute payload ("" = unset)
+	currentsJSON string                        // traceon/currents attribute payload ("" = unset)
+	magnetsJSON  string                        // traceon/magnets attribute payload ("" = unset)
+	permJSON     string                        // traceon/permeability attribute payload ("" = unset)
+	materials    map[string]wire.MaterialInfo  // id → material, for materials.get
+	selRefs      []string                      // model.selection result
+	refBodies    []wire.BodyTopology           // model.referenceKeys per-body topology
+	attrStore    map[string]wire.AttributeInfo // per-target attributes ("target\x00name" → info)
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -48,9 +51,28 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		return json.Marshal(h.facets)
 	case wire.MethodDocumentsList:
 		return json.Marshal(wire.ListDocumentsResult{Documents: []wire.DocumentInfo{{ID: 1, Active: true}}})
+	case wire.MethodModelSelection:
+		return json.Marshal(wire.SelectionResult{Refs: h.selRefs})
+	case wire.MethodModelReferenceKeys:
+		return json.Marshal(wire.ReferenceKeysResult{Bodies: h.refBodies})
+	case wire.MethodAttributesSet:
+		var a wire.SetAttributeArgs
+		_ = json.Unmarshal(req, &a)
+		if h.attrStore == nil {
+			h.attrStore = map[string]wire.AttributeInfo{}
+		}
+		info := wire.AttributeInfo{Set: a.Set, Name: a.Name, Value: a.Value, Target: a.Target}
+		h.attrStore[a.Target+"\x00"+a.Name] = info
+		return json.Marshal(wire.AttributeResult{Attribute: info, Found: true})
 	case wire.MethodAttributesGet:
 		var args wire.GetAttributeArgs
 		_ = json.Unmarshal(req, &args)
+		if args.Target != "" {
+			if info, ok := h.attrStore[args.Target+"\x00"+args.Name]; ok {
+				return json.Marshal(wire.AttributeResult{Attribute: info, Found: true})
+			}
+			return json.Marshal(wire.AttributeResult{Found: false})
+		}
 		payload := h.voltagesJSON
 		switch args.Name {
 		case attrCurrents:
@@ -530,5 +552,66 @@ func TestExtractProfileRejectsBox(t *testing.T) {
 	h.facets = boxFacets()
 	if _, err := NewEngine(h).extractProfile(0); err == nil {
 		t.Error("extractProfile accepted a non-axisymmetric box")
+	}
+}
+
+// selectionHost is a ring body (axisymmetric) named without any role convention, whose face "f0"
+// is owned by body "b0" (per the reference-keys topology), with the given face selected.
+func selectionHost() *fakeHost {
+	h := ringHost()
+	h.bodies = []wire.BodyInfo{{Index: 0, Name: "Electrode", Solid: true, Key: "b0"}}
+	h.refBodies = []wire.BodyTopology{{Faces: []wire.TopologyRef{{Key: "f0"}, {Key: "f1"}}}}
+	h.selRefs = []string{"f0"}
+	return h
+}
+
+// TestFaceToBody checks a selected face resolves to its owning body's reference key.
+func TestFaceToBody(t *testing.T) {
+	owner, err := NewEngine(selectionHost()).faceToBody()
+	if err != nil {
+		t.Fatalf("faceToBody: %v", err)
+	}
+	if owner["f0"] != "b0" || owner["f1"] != "b0" || owner["b0"] != "b0" {
+		t.Errorf("owner map = %v, want f0/f1/b0 → b0", owner)
+	}
+}
+
+// TestAssignToSelectionThenClassify is the end-to-end face-pick flow: assign a coil current to the
+// body owning the selected face, then a study reads the per-body attribute and classifies it.
+func TestAssignToSelectionThenClassify(t *testing.T) {
+	h := selectionHost()
+	e := NewEngine(h)
+	e.params.assignRole = "coil"
+	e.params.assignValue = 7
+
+	msg, err := e.assignToSelection()
+	if err != nil {
+		t.Fatalf("assignToSelection: %v", err)
+	}
+	if !strings.Contains(msg, "1 body") {
+		t.Errorf("assign status = %q, want 1 body assigned", msg)
+	}
+	// The body now reads back as a 7 A coil.
+	role, value, ok := e.bodyAssignment(1, "b0")
+	if !ok || role != "coil" || value != 7 {
+		t.Errorf("bodyAssignment = (%q, %g, %v), want (coil, 7, true)", role, value, ok)
+	}
+	// A study classifies it as a coil (overriding the "Electrode" name).
+	res, err := e.RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.CoilCount != 1 || res.ElectrodeCount != 0 {
+		t.Errorf("counts = (e=%d, coil=%d), want (0, 1)", res.ElectrodeCount, res.CoilCount)
+	}
+}
+
+// TestAssignNothingSelected checks assigning with an empty selection is a friendly no-op.
+func TestAssignNothingSelected(t *testing.T) {
+	h := selectionHost()
+	h.selRefs = nil
+	msg, err := NewEngine(h).assignToSelection()
+	if err != nil || !strings.Contains(msg, "select") {
+		t.Errorf("assign with no selection = (%q, %v), want a 'select…' hint", msg, err)
 	}
 }
