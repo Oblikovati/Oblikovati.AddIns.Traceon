@@ -20,12 +20,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
-from typing import Callable
+from typing import Any, Callable
 
 # Registry of (pkg, name, generator) populated by the @fixture decorator.
 _FIXTURES: list[tuple[str, str, Callable[[], dict]]] = []
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats with strings so the output is valid JSON.
+
+    Standard JSON has no NaN/Infinity; Python's json emits the bare tokens NaN/Infinity
+    which Go's encoding/json rejects. Radial BEM kernels legitimately produce these at
+    singularities, so we encode them as "NaN"/"Infinity"/"-Infinity" strings and decode
+    them on the Go side via oracle.F. Finite floats stay as JSON numbers.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj):
+            return "NaN"
+        if math.isinf(obj):
+            return "Infinity" if obj > 0 else "-Infinity"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 def fixture(pkg: str, name: str):
@@ -61,7 +83,19 @@ def _elliptic() -> dict:
             "ellipkm1": float(B.ellipkm1(1.0 - m)),
             "ellipem1": float(B.ellipem1(1.0 - m)),
         })
-    return {"cases": cases}
+
+    # Reciprocal-modulus branch: Ellipk/Ellipe at m outside [0, 1] exercise the
+    # imaginary-modulus transforms in the C (which neither test_elliptic.py nor the
+    # km1/em1 columns above reach). km1/em1 are undefined there, so omit them.
+    k_e_only = []
+    for m in [-5.0, -2.0, -1.5, 2.0, 5.0, 10.0]:
+        k_e_only.append({
+            "m": m,
+            "ellipk": float(B.ellipk(m)),
+            "ellipe": float(B.ellipe(m)),
+        })
+
+    return {"cases": cases, "k_e_only": k_e_only}
 
 
 # --------------------------------------------------------------------------------------
@@ -88,7 +122,7 @@ def main() -> int:
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, f"{name}.golden.json")
         with open(dest, "w") as f:
-            json.dump(data, f, indent=1, sort_keys=True)
+            json.dump(_json_safe(data), f, indent=1, sort_keys=True, allow_nan=False)
             f.write("\n")
         n = len(data.get("cases", []))
         print(f"wrote {dest} ({n} cases)")
