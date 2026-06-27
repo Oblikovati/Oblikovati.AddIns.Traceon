@@ -97,6 +97,59 @@ func TestOrderPreserved(t *testing.T) {
 	}
 }
 
+// TestMagnetostaticActiveElements checks the magnetostatic builder selects scalar-potential
+// and magnetizable elements (and nothing else), with the assigned values.
+func TestMagnetostaticActiveElements(t *testing.T) {
+	exc := New(twoElectrodeMesh())
+	exc.AddMagnetostaticPotential("a", 50)
+	exc.AddMagnetizable("b", 1000)
+
+	_, types, values := exc.Magnetostatic()
+	if len(types) != 3 { // electrode a = 2 lines, b = 1 line
+		t.Fatalf("magnetostatic elements = %d, want 3", len(types))
+	}
+	for i, ty := range types {
+		switch ty {
+		case radial.MagnetostaticPot:
+			if values[i] != 50 {
+				t.Errorf("potential value[%d] = %g, want 50", i, values[i])
+			}
+		case radial.Magnetizable:
+			if values[i] != 1000 {
+				t.Errorf("permeability value[%d] = %g, want 1000", i, values[i])
+			}
+		default:
+			t.Errorf("unexpected magnetostatic type %d at %d", ty, i)
+		}
+	}
+	// The electrostatic builder must ignore magnetostatic excitations.
+	if lines, _, _ := exc.Electrostatic(); len(lines) != 0 {
+		t.Errorf("electrostatic builder returned %d magnetostatic elements, want 0", len(lines))
+	}
+}
+
+// TestMagnetostaticBoundary checks a magnetostatic boundary becomes a zero-permeability
+// magnetizable element.
+func TestMagnetostaticBoundary(t *testing.T) {
+	exc := New(twoElectrodeMesh())
+	exc.AddMagnetostaticPotential("a", 1)
+	exc.AddMagnetostaticBoundary("b")
+
+	_, types, values := exc.Magnetostatic()
+	found := false
+	for i, ty := range types {
+		if ty == radial.Magnetizable {
+			found = true
+			if values[i] != 0 {
+				t.Errorf("boundary magnetizable value = %g, want 0", values[i])
+			}
+		}
+	}
+	if !found {
+		t.Error("no Magnetizable element produced for the magnetostatic boundary")
+	}
+}
+
 // TestAssignUnknownElectrodePanics checks assigning to a non-existent electrode is rejected.
 func TestAssignUnknownElectrodePanics(t *testing.T) {
 	defer func() {
