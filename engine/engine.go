@@ -32,10 +32,22 @@ type studyParams struct {
 	magnetisation float64 // default axial magnetisation for magnet bodies (A/m)
 	permeability  float64 // default relative permeability for iron bodies
 	fastTrace     bool    // trace through the fast axial-series interpolation of the field
+
+	// Parametric-lens definition: when lens != lensHost the study ignores host geometry and
+	// builds the electrodes from core/geometry (dimensions in cm). lensRadius is the aperture/
+	// bore radius, lensThickness each electrode's axial thickness, lensSpacing the inter-
+	// electrode gap.
+	lens          paramLens
+	lensRadius    float64
+	lensThickness float64
+	lensSpacing   float64
 }
 
 func defaultParams() studyParams {
-	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6, permeability: 1000}
+	return studyParams{
+		voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6, permeability: 1000,
+		lens: lensHost, lensRadius: 0.3, lensThickness: 0.5, lensSpacing: 0.5,
+	}
 }
 
 // Engine runs electron-optics studies against a live host.

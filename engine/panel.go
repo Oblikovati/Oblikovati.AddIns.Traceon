@@ -36,6 +36,12 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 			client.PanelValueEditor("permeability", "Iron μr", strconv.FormatFloat(p.permeability, 'g', -1, 64)),
 			client.PanelValueEditor("fast_trace", "Fast trace (axial) 0/1", boolField(p.fastTrace)),
 			client.PanelSeparator(),
+			client.PanelLabel("lens_hdr", "— Parametric lens (no host geometry) —"),
+			client.PanelValueEditor("lens", "Lens (host/einzel/cylinder)", string(p.lens)),
+			client.PanelValueEditor("lens_radius", "Bore radius (cm)", strconv.FormatFloat(p.lensRadius, 'g', -1, 64)),
+			client.PanelValueEditor("lens_thickness", "Electrode thickness (cm)", strconv.FormatFloat(p.lensThickness, 'g', -1, 64)),
+			client.PanelValueEditor("lens_spacing", "Electrode spacing (cm)", strconv.FormatFloat(p.lensSpacing, 'g', -1, 64)),
+			client.PanelSeparator(),
 			client.PanelButton("run", "Run Electron-Optics Study", RunStudyCommandID),
 		},
 	})
@@ -62,6 +68,20 @@ func (e *Engine) applyPanelEdit(controlID, value string) {
 		e.params.permeability = simNum(value, e.params.permeability)
 	case "fast_trace":
 		e.params.fastTrace = simNum(value, 0) != 0
+	case "lens":
+		e.params.lens = parseLens(strings.TrimSpace(value))
+	case "lens_radius":
+		if r := simNum(value, e.params.lensRadius); r > 0 {
+			e.params.lensRadius = r
+		}
+	case "lens_thickness":
+		if t := simNum(value, e.params.lensThickness); t > 0 {
+			e.params.lensThickness = t
+		}
+	case "lens_spacing":
+		if s := simNum(value, e.params.lensSpacing); s > 0 {
+			e.params.lensSpacing = s
+		}
 	}
 }
 
