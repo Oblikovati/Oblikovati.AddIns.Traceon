@@ -304,6 +304,20 @@ func TestMagnetByAttribute(t *testing.T) {
 	}
 }
 
+// TestFastTrace checks the fast axial-interpolation tracing path runs end to end and still
+// produces a rendered study (the field evaluator swaps to the axial series).
+func TestFastTrace(t *testing.T) {
+	e := NewEngine(cylinderHost())
+	e.applyPanelEdit("fast_trace", "1")
+	res, err := e.RunStudy(0)
+	if err != nil {
+		t.Fatalf("fast-trace RunStudy: %v", err)
+	}
+	if res.RayCount == 0 {
+		t.Error("fast trace produced no rays")
+	}
+}
+
 // TestSetupRegistersUI checks Setup registers the command and shows the panel.
 func TestSetupRegistersUI(t *testing.T) {
 	h := &fakeHost{}

@@ -107,7 +107,16 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	mag := buildMagnetCharges(magnets)
 	bem := field.NewFieldRadialBEMFull(elec, mag, current)
 
-	rays := e.traceBeam(bem, electrodes, coils, magnets, params)
+	// Electrostatic field evaluator: the direct boundary integral, or — when fast tracing is
+	// on and there are electrodes — the fast axial-series interpolation (accurate near the axis).
+	eEval := bem.FieldAtPoint
+	if params.fastTrace && len(electrodes) > 0 {
+		if fa, ferr := e.axialField(elec, electrodes, coils, magnets); ferr == nil {
+			eEval = fa.FieldAtPoint
+		}
+	}
+
+	rays := e.traceBeam(eEval, bem, electrodes, coils, magnets, params)
 
 	nodes := renderNodes(electrodes, coils, magnets, bem, rays)
 	if err := e.pushGraphics(nodes); err != nil {
@@ -266,7 +275,23 @@ func (e *Engine) activeDocID() (uint64, bool) {
 // traceBeam launches params.numRays parallel rays from below the geometry (in metres), spread
 // across the radial aperture, along +z, and traces each through the BEM field. Returns the
 // trajectories (in metres).
-func (e *Engine) traceBeam(bem field.FieldRadialBEM, electrodes []electrode, coils []coil, magnets []magnet, params studyParams) [][]tracing.State {
+// axialSamples is the number of on-axis sample points the fast axial-series field is built
+// from over the trace span.
+const axialSamples = 200
+
+// axialField builds the fast axial-series interpolation of the electrostatic field over the
+// whole trace span (geometry + downstream drift), in metres.
+func (e *Engine) axialField(elec solver.EffectivePointCharges, electrodes []electrode, coils []coil, magnets []magnet) (field.FieldRadialAxial, error) {
+	_, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets)
+	zMin, zMax := zMinCm*cmToMetres, zMaxCm*cmToMetres
+	drift := driftFactor * (zMax - zMin)
+	return field.NewFieldRadialAxial(elec, zMin-boundsMargin, zMax+drift, axialSamples)
+}
+
+// electrostaticEval evaluates the electrostatic field at an (x, y, z) point (cm-free, metres).
+type electrostaticEval func(geom2d.Vertex) geom2d.Vertex
+
+func (e *Engine) traceBeam(eEval electrostaticEval, bem field.FieldRadialBEM, electrodes []electrode, coils []coil, magnets []magnet, params studyParams) [][]tracing.State {
 	rMaxCm, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets)
 	rMax, zMin, zMax := rMaxCm*cmToMetres, zMinCm*cmToMetres, zMaxCm*cmToMetres
 	// Trace through a generous downstream drift region so the focus (which forms past the
@@ -277,12 +302,12 @@ func (e *Engine) traceBeam(bem field.FieldRadialBEM, electrodes []electrode, coi
 		{-boundsMargin, boundsMargin},
 		{zMin - boundsMargin, zMax + drift},
 	}
-	// The field the particle feels: E from the electrodes and H from the coils. The tracer
-	// applies the Lorentz force a = q/m·(E + μ₀·v×H).
+	// The field the particle feels: E from the electrodes (direct or axial interpolation) and
+	// H from the coils + magnets. The tracer applies the Lorentz force a = q/m·(E + μ₀·v×H).
 	fieldFn := func(pos, _ geom3d.Vec3) (elec, mag geom3d.Vec3) {
 		p := geom2d.Vertex{pos[0], pos[1], pos[2]}
-		ef := bem.FieldAtPoint(p)
-		hf := bem.MagnetostaticFieldAtPoint(p) // current rings + permanent-magnet surface charges
+		ef := eEval(p)
+		hf := bem.MagnetostaticFieldAtPoint(p)
 		return geom3d.Vec3{ef[0], ef[1], ef[2]}, geom3d.Vec3{hf[0], hf[1], hf[2]}
 	}
 	v0 := tracing.VelocityVec(params.energyEV, geom3d.Vec3{0, 0, 1}, constants.ElectronMass)

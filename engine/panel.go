@@ -33,6 +33,7 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 			client.PanelValueEditor("rays", "Number of rays", strconv.Itoa(p.numRays)),
 			client.PanelValueEditor("coil_current", "Coil current (A)", strconv.FormatFloat(p.coilCurrent, 'g', -1, 64)),
 			client.PanelValueEditor("magnetisation", "Magnet M (A/m)", strconv.FormatFloat(p.magnetisation, 'g', -1, 64)),
+			client.PanelValueEditor("fast_trace", "Fast trace (axial) 0/1", boolField(p.fastTrace)),
 			client.PanelSeparator(),
 			client.PanelButton("run", "Run Electron-Optics Study", RunStudyCommandID),
 		},
@@ -56,7 +57,17 @@ func (e *Engine) applyPanelEdit(controlID, value string) {
 		e.params.coilCurrent = simNum(value, e.params.coilCurrent)
 	case "magnetisation":
 		e.params.magnetisation = simNum(value, e.params.magnetisation)
+	case "fast_trace":
+		e.params.fastTrace = simNum(value, 0) != 0
 	}
+}
+
+// boolField formats a boolean as the "0"/"1" the panel shows for a toggle.
+func boolField(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // simNum reads the leading number from a form value (e.g. "1000 V" → 1000), keeping fallback
