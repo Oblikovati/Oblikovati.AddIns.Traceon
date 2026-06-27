@@ -126,6 +126,31 @@ func contains(xs []float64, v float64) bool {
 	return false
 }
 
+// TestMeshGroupNamedGroups checks MeshGroup meshes several named paths into one mesh with a
+// physical group per path, and that the shared junction node between abutting paths is merged.
+func TestMeshGroupNamedGroups(t *testing.T) {
+	lower := Line(Point{1, 0, 0}, Point{1, 0, 1}).WithName("lower")
+	upper := Line(Point{1, 0, 1}, Point{1, 0, 2}).WithName("upper") // starts where lower ends
+	m := MeshGroup([]Path{lower, upper}, MeshOptions{MeshSize: 0.5})
+
+	if _, ok := m.PhysicalToLines["lower"]; !ok {
+		t.Errorf("missing physical group lower; have %v", m.PhysicalToLines)
+	}
+	if _, ok := m.PhysicalToLines["upper"]; !ok {
+		t.Errorf("missing physical group upper; have %v", m.PhysicalToLines)
+	}
+	// Every line is assigned to exactly one group (no leaks, no double-counting).
+	total := len(m.PhysicalToLines["lower"]) + len(m.PhysicalToLines["upper"])
+	if total != len(m.Lines) {
+		t.Errorf("group line count %d != total lines %d", total, len(m.Lines))
+	}
+	// Each length-1 path meshes to the 3-element floor → 4 nodes; the shared junction node
+	// (1,0,1) is merged across the two paths, so 4+4−1 = 7 points, not 8.
+	if len(m.Points) != 7 {
+		t.Errorf("points = %d, want 7 (junction node merged across paths)", len(m.Points))
+	}
+}
+
 // TestRadialLinesSolves checks the meshed parametric electrode feeds the radial solver: a
 // charged aperture electrode produces a non-trivial surface-charge solution.
 func TestRadialLinesSolves(t *testing.T) {
