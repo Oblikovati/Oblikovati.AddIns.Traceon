@@ -38,11 +38,103 @@ func (e *Engine) extractProfile(bodyIndex int) (*profile, error) {
 	if facets.VertexCount == 0 {
 		return nil, fmt.Errorf("body %d has no surface facets to section", bodyIndex)
 	}
+	if nonAxisymmetric(facets) {
+		return nil, fmt.Errorf("body %d is not axisymmetric about the Y axis (its cross-section radius varies with angle); Traceon simulates surfaces of revolution", bodyIndex)
+	}
 	loop := fullMeridian(facets.VertexCoordinates)
 	if len(loop) < 2 {
 		return nil, fmt.Errorf("body %d produced a degenerate (r,z) profile", bodyIndex)
 	}
 	return &profile{loops: [][]geom2d.Point2{loop}}, nil
+}
+
+// azimuthSectors divides the revolution into this many angular bins for the axisymmetry test.
+const azimuthSectors = 12
+
+// axisymRadiusTol is the largest fractional spread of the boundary radius across azimuth (per
+// axial band) a surface of revolution may show: generous enough that a coarsely faceted round
+// body passes, tight enough that a box (corner ≈ √2 × edge ≈ 41 %) or bracket is rejected.
+const axisymRadiusTol = 0.2
+
+// nonAxisymmetric reports whether the facets describe a body that is NOT a surface of revolution
+// about the optical (Y) axis: at some axial level the boundary radius varies with azimuth beyond
+// axisymRadiusTol. Sectioning such a body (a box, a deflector, a bracket) to an (r, z) meridian
+// would be meaningless, so the study skips it rather than solving garbage. It samples both the
+// facet vertices AND each face's edge midpoints — a flat side of a box keeps its corner vertices
+// equidistant from the axis, so the dip to the inscribed radius at the edge midpoints is what
+// exposes the asymmetry.
+func nonAxisymmetric(f wire.FacetSetResult) bool {
+	xyz := f.VertexCoordinates
+	if len(xyz) < 9 {
+		return false
+	}
+	zMin, zMax := math.Inf(1), math.Inf(-1)
+	for i := 0; i < len(xyz)/3; i++ {
+		y := xyz[i*3+1]
+		zMin, zMax = math.Min(zMin, y), math.Max(zMax, y)
+	}
+	if zMax <= zMin {
+		return false
+	}
+
+	// maxR per (axial band, azimuth sector): the boundary radius sampled around the revolution.
+	maxR := make([][]float64, meridianBins)
+	for b := range maxR {
+		maxR[b] = make([]float64, azimuthSectors)
+	}
+	sample := func(x, y, z float64) {
+		r := math.Hypot(x, z)
+		b := clampi(int((y-zMin)/(zMax-zMin)*float64(meridianBins-1)), meridianBins)
+		s := clampi(int((math.Atan2(z, x)+math.Pi)/(2*math.Pi)*azimuthSectors), azimuthSectors)
+		maxR[b][s] = math.Max(maxR[b][s], r)
+	}
+	for i := 0; i < len(xyz)/3; i++ {
+		sample(xyz[i*3], xyz[i*3+1], xyz[i*3+2])
+	}
+	forEachFaceEdgeMidpoint(f, sample)
+
+	// A band whose radius is consistent across (most) sectors is rotationally symmetric; a band
+	// whose radius spreads beyond the tolerance is not — and one such band condemns the body.
+	for b := 0; b < meridianBins; b++ {
+		lo, hi, populated := math.Inf(1), 0.0, 0
+		for _, r := range maxR[b] {
+			if r > 0 {
+				lo, hi, populated = math.Min(lo, r), math.Max(hi, r), populated+1
+			}
+		}
+		if populated >= azimuthSectors/2 && hi > 0 && (hi-lo)/hi > axisymRadiusTol {
+			return true
+		}
+	}
+	return false
+}
+
+// forEachFaceEdgeMidpoint calls sample at the midpoint of every edge of every face polygon, using
+// the per-face vertex index runs. A no-op when the facet set carries no connectivity.
+func forEachFaceEdgeMidpoint(f wire.FacetSetResult, sample func(x, y, z float64)) {
+	xyz, idx := f.VertexCoordinates, f.VertexIndices
+	at := func(v int) (float64, float64, float64) { return xyz[v*3], xyz[v*3+1], xyz[v*3+2] }
+	pos := 0
+	for _, count := range f.IndexCountPerFace {
+		for k := 0; k < count && pos+count <= len(idx); k++ {
+			a, b := idx[pos+k], idx[pos+(k+1)%count]
+			ax, ay, az := at(a)
+			bx, by, bz := at(b)
+			sample((ax+bx)/2, (ay+by)/2, (az+bz)/2)
+		}
+		pos += count
+	}
+}
+
+// clampi clamps an index into [0, n).
+func clampi(i, n int) int {
+	if i < 0 {
+		return 0
+	}
+	if i >= n {
+		return n - 1
+	}
+	return i
 }
 
 // fullMeridian maps flat xyz vertices to (r = √(x²+z²), z = y) and returns the closed
