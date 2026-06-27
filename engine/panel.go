@@ -42,6 +42,11 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 			client.PanelValueEditor("lens_thickness", "Electrode thickness (cm)", strconv.FormatFloat(p.lensThickness, 'g', -1, 64)),
 			client.PanelValueEditor("lens_spacing", "Electrode spacing (cm)", strconv.FormatFloat(p.lensSpacing, 'g', -1, 64)),
 			client.PanelSeparator(),
+			client.PanelLabel("assign_hdr", "— Assign to viewport selection —"),
+			client.PanelValueEditor("assign_role", "Role (electrode/coil/magnet/iron)", p.assignRole),
+			client.PanelValueEditor("assign_value", "Value (V/A/A·m⁻¹/μr)", strconv.FormatFloat(p.assignValue, 'g', -1, 64)),
+			client.PanelButton("assign", "Assign to selected face's body", AssignSelectionCommandID),
+			client.PanelSeparator(),
 			client.PanelButton("run", "Run Electron-Optics Study", RunStudyCommandID),
 		},
 	})
@@ -82,6 +87,12 @@ func (e *Engine) applyPanelEdit(controlID, value string) {
 		if s := simNum(value, e.params.lensSpacing); s > 0 {
 			e.params.lensSpacing = s
 		}
+	case "assign_role":
+		if r := strings.TrimSpace(strings.ToLower(value)); assignRoles[r] {
+			e.params.assignRole = r
+		}
+	case "assign_value":
+		e.params.assignValue = simNum(value, e.params.assignValue)
 	}
 }
 

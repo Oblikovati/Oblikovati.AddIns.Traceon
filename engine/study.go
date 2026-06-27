@@ -189,11 +189,14 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 	permeabilities := e.ironPermeabilities()
 	voltages := e.electrodeVoltages()
 
+	docID, _ := e.activeDocID()
+
 	var elecProfs []*profile
 	var elecIdx []int
 	var coils []coil
 	var magnets []magnet
 	var irons []iron
+	var assigned []electrode // viewport-assigned electrodes carry their own voltage
 	for _, b := range list.Bodies {
 		if !b.Solid {
 			continue
@@ -201,6 +204,11 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 		prof, err := e.extractProfile(b.Index)
 		if err != nil {
 			continue // a body that cannot be sectioned (e.g. non-axisymmetric) is skipped
+		}
+		// A viewport assignment (face-pick → Assign) takes precedence over every convention.
+		if role, value, ok := e.bodyAssignment(docID, b.Key); ok {
+			applyAssignment(role, value, prof, &coils, &magnets, &irons, &assigned)
+			continue
 		}
 		switch {
 		case isCoilBody(b, currents, params.coilCurrent, &coils, prof):
@@ -228,6 +236,7 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magne
 		}
 		electrodes[i] = electrode{prof: prof, voltage: v}
 	}
+	electrodes = append(electrodes, assigned...) // the explicitly-assigned electrodes
 	return electrodes, coils, magnets, irons, nil
 }
 

@@ -41,12 +41,18 @@ type studyParams struct {
 	lensRadius    float64
 	lensThickness float64
 	lensSpacing   float64
+
+	// Viewport assignment: the role + value the Assign command writes onto the body owning the
+	// currently-selected face (electrode = volts, coil = amperes, magnet = A·m⁻¹, iron = μr).
+	assignRole  string
+	assignValue float64
 }
 
 func defaultParams() studyParams {
 	return studyParams{
 		voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6, permeability: 1000,
 		lens: lensHost, lensRadius: 0.3, lensThickness: 0.5, lensSpacing: 0.5,
+		assignRole: "electrode", assignValue: 1000,
 	}
 }
 
@@ -74,6 +80,9 @@ const (
 	RunStudyCommandID     = "Traceon.RunStudy"
 	EinzelLensCommandID   = "Traceon.RunEinzelLens"
 	CylinderLensCommandID = "Traceon.RunCylinderLens"
+	// AssignSelectionCommandID tags the body owning the selected face with the panel's role +
+	// value, so a user picks an electrode in the viewport and assigns its excitation.
+	AssignSelectionCommandID = "Traceon.AssignSelection"
 )
 
 // lensForCommand maps a parametric-lens command to the lens it selects, and reports whether the
@@ -111,6 +120,8 @@ func (e *Engine) RegisterCommands() error {
 			Tooltip: "Build a three-aperture einzel lens parametrically (no host geometry) and run the study."},
 		{ID: CylinderLensCommandID, DisplayName: "Run Two-Cylinder Lens (parametric)", Category: "Traceon",
 			Tooltip: "Build a two-cylinder immersion lens parametrically (no host geometry) and run the study."},
+		{ID: AssignSelectionCommandID, DisplayName: "Assign Excitation to Selection", Category: "Traceon",
+			Tooltip: "Tag the body owning the selected face with the panel's role and value (electrode/coil/magnet/iron)."},
 	}
 	for _, c := range cmds {
 		if _, err := e.api.Commands().Create(c); err != nil {
@@ -157,6 +168,8 @@ func (e *Engine) Notify(ev []byte) {
 			e.params.lens = lens
 			e.mu.Unlock()
 			e.launchStudy()
+		} else if c.Command == AssignSelectionCommandID {
+			e.launchAssign()
 		} else if c.Command == RunStudyCommandID {
 			e.launchStudy()
 		}
@@ -195,5 +208,19 @@ func (e *Engine) launchStudy() {
 			return
 		}
 		_, _ = e.api.Status().SetText(studySummary(res))
+	}()
+}
+
+// launchAssign runs the viewport-selection excitation assignment on a SEPARATE goroutine (it
+// calls the host — selection, reference keys, attribute set — which must never run on the session
+// goroutine), reporting the outcome to the status bar.
+func (e *Engine) launchAssign() {
+	go func() {
+		msg, err := e.assignToSelection()
+		if err != nil {
+			_, _ = e.api.Status().SetText("Traceon assign failed: " + err.Error())
+			return
+		}
+		_, _ = e.api.Status().SetText(msg)
 	}()
 }
