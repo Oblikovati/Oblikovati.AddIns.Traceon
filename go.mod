@@ -14,6 +14,7 @@ module oblikovati.org/traceon
 
 go 1.24.0
 
-// gonum.org/v1/gonum (pure-Go LU/QR/splines, wrapped behind core/linalg) is added in
-// the PBI that first imports it; declaring it before use makes `go mod tidy` strip it.
-require oblikovati.org/api v0.91.0
+require (
+	gonum.org/v1/gonum v0.17.0 // pure-Go dense linalg, wrapped behind core/linalg
+	oblikovati.org/api v0.91.0
+)

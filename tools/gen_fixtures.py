@@ -98,6 +98,146 @@ def _elliptic() -> dict:
     return {"cases": cases, "k_e_only": k_e_only}
 
 
+@fixture("ring", "ring")
+def _ring() -> dict:
+    """Single-ring kernels: potential, r/z derivatives, current potential/field, and the
+    on-axis derivative recurrences. Deterministic samples (seeded) so regen is stable."""
+    import ctypes as C
+    import numpy as np
+    import traceon.backend as B
+
+    # axial_derivatives_radial_ring / current_axial_derivatives_radial_ring have no Python
+    # wrapper (used internally), so call the C symbols directly. void fn(z0, r, z, out[9]).
+    def _ring_derivs(symbol: str, z0: float, r: float, z: float) -> list[float]:
+        fn = getattr(B.backend_lib, symbol)
+        fn.restype = None
+        fn.argtypes = [C.c_double, C.c_double, C.c_double, C.POINTER(C.c_double)]
+        out = (C.c_double * 9)()
+        fn(z0, r, z, out)
+        return [float(v) for v in out]
+
+    rng = np.random.default_rng(20240617)
+    # Generic off-axis samples in (0,1]^4 plus a few structured near-axis / near-singular
+    # points that stress the guards (r0→0, delta→0).
+    samples = rng.uniform(0.01, 1.0, size=(60, 4)).tolist()
+    samples += [
+        [1.0, 0.0, 0.0, 0.5],    # pure axial offset
+        [1.0, 0.0, 0.5, 0.0],    # pure radial offset
+        [2.0, 1.0, 0.3, -0.4],
+        [1e-11, 0.0, 0.5, 0.5],  # r0 BELOW MinDistanceAxis (1e-10) → dr1 guard returns 0
+        [55.0, 0.0, 0.0, 1.0],
+    ]
+
+    potential, dr1, dz1, axial_derivs = [], [], [], []
+    for r0, z0, a, b in samples:
+        # potential/dr1/dz1 take (r0, z0, delta_r, delta_z); use a,b as the deltas.
+        potential.append(float(B.potential_radial_ring(r0, z0, a, b)))
+        dr1.append(float(B.dr1_potential_radial_ring(r0, z0, a, b)))
+        dz1.append(float(B.dz1_potential_radial_ring(r0, z0, a, b)))
+        axial_derivs.append(_ring_derivs("axial_derivatives_radial_ring", z0, max(a, 1e-3), z0 + b))
+
+    # Current ring: potential + 2-vector field + axial derivative recurrence.
+    cur_samples = rng.uniform(0.01, 3.0, size=(40, 4)).tolist()
+    cur_samples += [[0.0, 0.0, 2.0, 0.0], [0.0, 1.5, 2.0, 0.0], [1e-9, 0.0, 1.0, 0.0]]
+    cur_potential, cur_field, cur_axial_derivs = [], [], []
+    for x0, y0, x, y in cur_samples:
+        cur_potential.append(float(B.current_potential_axial_radial_ring(y0, x, y)))
+        f = B.current_field_radial_ring(x0, y0, x, y)
+        cur_field.append([float(f[0]), float(f[1])])
+        cur_axial_derivs.append(_ring_derivs("current_axial_derivatives_radial_ring", y0, x, y))
+
+    return {
+        "samples": samples,
+        "potential": potential,
+        "dr1": dr1,
+        "dz1": dz1,
+        "axial_derivs": axial_derivs,
+        "cur_samples": cur_samples,
+        "cur_potential": cur_potential,
+        "cur_field": cur_field,
+        "cur_axial_derivs": cur_axial_derivs,
+    }
+
+
+@fixture("radial", "radial")
+def _radial() -> dict:
+    """Electrostatic radial BEM: jacobian buffers, charge, potential/field evaluation,
+    the singular self-term integrands, and dense matrix assembly on a small line set."""
+    import ctypes as C
+    import numpy as np
+    import traceon.backend as B
+
+    def line4(r0, z0, r1, z1):
+        # GMSH line4 ordering: [start, end, 1/3-point, 2/3-point].
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    lines = np.array([
+        line4(1.0, 0.0, 1.0, 1.0),    # vertical at r=1 (charge_radial → 2π)
+        line4(2.0, 0.0, 2.0, 0.5),    # vertical at r=2
+        line4(1.0, 0.0, 1.5, 0.5),    # slanted
+    ])
+    n = len(lines)
+
+    jac, pos = B.fill_jacobian_buffer_radial(lines)
+    charges = np.array([1.0, 0.7, -0.4])
+    charge_radial = [float(B.charge_radial(lines[i], 1.0)) for i in range(n)]
+
+    eval_points = np.array([
+        [0.0, 0.0, 0.5], [1.2, 0.0, 0.3], [3.0, 0.0, -1.0], [0.5, 0.0, 2.0],
+    ])
+    potential = [float(B.potential_radial(p, charges, jac, pos)) for p in eval_points]
+    field = [[float(c) for c in B.field_radial(p, charges, jac, pos)] for p in eval_points]
+
+    # Singular self-term integrands at sampled α (raw C functions; the diagonal is their
+    # integral over α — verified in the solver PBI). self_potential: double fn(double, double[4][3]).
+    alphas = [-0.9, -0.5, -0.123, 0.25, 0.5, 0.9]
+    sp = B.backend_lib.self_potential_radial
+    sp.restype = C.c_double
+    sp.argtypes = [C.c_double, C.POINTER(C.c_double)]
+
+    class _SFArgs(C.Structure):
+        _fields_ = [("line_points", C.POINTER(C.c_double)), ("K", C.c_double)]
+
+    sf = B.backend_lib.self_field_dot_normal_radial
+    sf.restype = C.c_double
+    sf.argtypes = [C.c_double, C.POINTER(_SFArgs)]
+
+    self_potential, self_field = [], []
+    K = 2.0
+    for i in range(n):
+        lp = np.ascontiguousarray(lines[i], dtype=np.float64)
+        lp_ptr = lp.ctypes.data_as(C.POINTER(C.c_double))
+        self_potential.append([float(sp(C.c_double(a), lp_ptr)) for a in alphas])
+        args = _SFArgs(line_points=lp_ptr, K=K)
+        self_field.append([float(sf(C.c_double(a), C.byref(args))) for a in alphas])
+
+    # Dense matrix assembly: 2 voltage rows + 1 dielectric row.
+    exc_types = np.array([1, 1, 3], dtype=np.uint8)        # VOLTAGE_FIXED, VOLTAGE_FIXED, DIELECTRIC
+    exc_values = np.array([1.0, 0.5, K])
+    matrix = np.zeros((n, n))
+    B.fill_matrix_radial(matrix, lines, exc_types, exc_values, jac, pos, 0, n - 1)
+
+    return {
+        "lines": lines.tolist(),
+        "jac": jac.tolist(),
+        "pos": pos.tolist(),
+        "charges": charges.tolist(),
+        "charge_radial": charge_radial,
+        "eval_points": eval_points.tolist(),
+        "potential": potential,
+        "field": field,
+        "alphas": alphas,
+        "K": K,
+        "self_potential": self_potential,
+        "self_field": self_field,
+        "exc_types": exc_types.tolist(),
+        "exc_values": exc_values.tolist(),
+        "matrix": matrix.tolist(),
+    }
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
