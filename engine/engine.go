@@ -67,7 +67,27 @@ func NewEngine(host HostCaller) *Engine {
 
 // RunStudyCommandID is the host command the add-in registers; firing it (a ribbon click or
 // the MCP bridge's execute_command) runs the electron-optics study on the active part.
-const RunStudyCommandID = "Traceon.RunStudy"
+// EinzelLensCommandID / CylinderLensCommandID run a built-in parametric lens with no host
+// geometry — they select the lens template (the panel dimensions still apply) and run, so the
+// parametric study is invokable from the command palette and over the MCP bridge.
+const (
+	RunStudyCommandID     = "Traceon.RunStudy"
+	EinzelLensCommandID   = "Traceon.RunEinzelLens"
+	CylinderLensCommandID = "Traceon.RunCylinderLens"
+)
+
+// lensForCommand maps a parametric-lens command to the lens it selects, and reports whether the
+// command is one of them.
+func lensForCommand(id string) (paramLens, bool) {
+	switch id {
+	case EinzelLensCommandID:
+		return lensEinzel, true
+	case CylinderLensCommandID:
+		return lensCylinder, true
+	default:
+		return lensHost, false
+	}
+}
 
 // studySummary formats the one-line status reported after a completed study, including the
 // axial focus when the beam crosses the optical axis.
@@ -84,13 +104,20 @@ func studySummary(res *StudyResult) string {
 // ribbon click is — including over the MCP bridge's execute_command. The host action is a no-op;
 // executing the command fires command.started, which Notify turns into a study run.
 func (e *Engine) RegisterCommands() error {
-	_, err := e.api.Commands().Create(wire.CreateCommandArgs{
-		ID:          RunStudyCommandID,
-		DisplayName: "Run Electron-Optics Study",
-		Category:    "Traceon",
-		Tooltip:     "Solve the radial BEM field for the active geometry and trace particle trajectories.",
-	})
-	return err
+	cmds := []wire.CreateCommandArgs{
+		{ID: RunStudyCommandID, DisplayName: "Run Electron-Optics Study", Category: "Traceon",
+			Tooltip: "Solve the radial BEM field for the active geometry and trace particle trajectories."},
+		{ID: EinzelLensCommandID, DisplayName: "Run Einzel Lens (parametric)", Category: "Traceon",
+			Tooltip: "Build a three-aperture einzel lens parametrically (no host geometry) and run the study."},
+		{ID: CylinderLensCommandID, DisplayName: "Run Two-Cylinder Lens (parametric)", Category: "Traceon",
+			Tooltip: "Build a two-cylinder immersion lens parametrically (no host geometry) and run the study."},
+	}
+	for _, c := range cmds {
+		if _, err := e.api.Commands().Create(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Setup performs the one-time host-facing initialization: register the study command and show
@@ -122,7 +149,15 @@ func (e *Engine) Notify(ev []byte) {
 		var c struct {
 			Command string `json:"command"`
 		}
-		if json.Unmarshal(ev, &c) == nil && c.Command == RunStudyCommandID {
+		if json.Unmarshal(ev, &c) != nil {
+			return
+		}
+		if lens, ok := lensForCommand(c.Command); ok {
+			e.mu.Lock()
+			e.params.lens = lens
+			e.mu.Unlock()
+			e.launchStudy()
+		} else if c.Command == RunStudyCommandID {
 			e.launchStudy()
 		}
 	case wire.EventPanelValueChanged:
