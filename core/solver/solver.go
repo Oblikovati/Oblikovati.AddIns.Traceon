@@ -11,9 +11,11 @@
 package solver
 
 import (
+	"oblikovati.org/traceon/core/geom3d"
 	"oblikovati.org/traceon/core/linalg"
 	"oblikovati.org/traceon/core/quad"
 	"oblikovati.org/traceon/core/radial"
+	"oblikovati.org/traceon/core/ring"
 )
 
 // selfTermAbsTol / selfTermRelTol match the scipy.integrate.quad tolerances the upstream
@@ -30,6 +32,20 @@ type EffectivePointCharges struct {
 	Jac     radial.JacobianBuffer
 	Pos     radial.PositionBuffer
 }
+
+// CurrentCharges is a set of axisymmetric current rings (coil-cross-section triangle
+// quadrature points carrying a current density) plus their 3D quadrature buffers, used to
+// evaluate the magnetic field of currents.
+type CurrentCharges struct {
+	Currents []float64
+	Jac      geom3d.CurrentJacobianBuffer
+	Pos      geom3d.CurrentPositionBuffer
+}
+
+// PreField returns the pre-existing magnetic field at a point (from currents and permanent
+// magnets) — the field that exists before the magnetizable response is solved for. It feeds
+// the magnetostatic right-hand side. Returning the zero field models a current-free problem.
+type PreField func(point geom3d.Vec3) geom3d.Vec3
 
 // SelfPotentialRadial returns the diagonal entry for a voltage element: the singular
 // self-potential, ∫_{-1}^{1} of the self-potential integrand over α, with the log
@@ -102,4 +118,56 @@ func SolveElectrostatic(lines []radial.Line, types []radial.ExcitationType, valu
 		return EffectivePointCharges{}, err
 	}
 	return EffectivePointCharges{Charges: charges, Jac: jac, Pos: pos}, nil
+}
+
+// rightHandSideMagnetostatic builds F for the magnetostatic system: the prescribed
+// scalar potential on MagnetostaticPot rows, and for Magnetizable rows the negated flux of
+// the pre-existing field (currents + permanent magnets) through the element normal. Mirrors
+// Solver.get_right_hand_side (magnetostatic branch). preField may be nil (current-free).
+func rightHandSideMagnetostatic(lines []radial.Line, types []radial.ExcitationType, values []float64, preField PreField) []float64 {
+	f := make([]float64, len(types))
+	for i, t := range types {
+		switch t {
+		case radial.MagnetostaticPot:
+			f[i] = values[i]
+		case radial.Magnetizable:
+			if preField == nil {
+				f[i] = 0
+				continue
+			}
+			center := radial.ElementCenter(lines[i])
+			h := preField(geom3d.Vec3{center[0], 0, center[1]})
+			n := radial.ElementNormal(lines[i])
+			dot := h[0]*n[0] + h[2]*n[1] // 2D normal (nr, nz) against the (r, z) field
+			f[i] = -ring.FluxDensityToChargeFactor(values[i]) * dot
+		default:
+			f[i] = 0
+		}
+	}
+	return f
+}
+
+// SolveMagnetostatic assembles and solves the magnetostatic radial BEM system for the
+// magnetizable/scalar-potential response, returning the magnetostatic effective charges.
+// preField supplies the pre-existing field from currents and permanent magnets (nil → none).
+// Mirrors MagnetostaticSolverRadial: the matrix is identical in form to the electrostatic
+// one (MagnetostaticPot ↔ self_potential, Magnetizable ↔ self_field_dot_normal − 1).
+func SolveMagnetostatic(lines []radial.Line, types []radial.ExcitationType, values []float64, preField PreField) (EffectivePointCharges, error) {
+	jac, pos := radial.FillJacobianBufferRadial(lines)
+	if len(lines) == 0 {
+		return EffectivePointCharges{Charges: nil, Jac: jac, Pos: pos}, nil
+	}
+	matrix := AssembleMatrix(lines, types, values, jac, pos)
+	f := rightHandSideMagnetostatic(lines, types, values, preField)
+	charges, err := linalg.SolveVector(matrix, f)
+	if err != nil {
+		return EffectivePointCharges{}, err
+	}
+	return EffectivePointCharges{Charges: charges, Jac: jac, Pos: pos}, nil
+}
+
+// CurrentFieldAt evaluates the magnetic field at point produced by the given current rings.
+// Convenience wrapper used to build a PreField from solved current charges.
+func (c CurrentCharges) CurrentFieldAt(point geom3d.Vec3) geom3d.Vec3 {
+	return radial.CurrentFieldRadial(point, c.Currents, c.Jac, c.Pos)
 }
