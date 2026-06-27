@@ -13,17 +13,18 @@ import (
 )
 
 // graphicsClientID is the single client-graphics group holding the study overlay (electrode
-// profile + trajectories + potential map). Re-running the study replaces the whole group.
+// profiles + trajectories + potential map). Re-running the study replaces the whole group.
 const graphicsClientID = "com.oblikovati.traceon.study"
 
 // potentialGrid is the (r, z) sampling resolution for the potential heatmap.
 const potentialGrid = 40
 
-// renderNodes assembles the study overlay: the potential heatmap (drawn underneath), the
-// electrode profile, and the traced trajectories.
-func renderNodes(prof *profile, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
-	nodes := []wire.GraphicsNode{potentialNode(prof, bem)}
-	nodes = append(nodes, electrodeNode(prof))
+// renderNodes assembles the study overlay (all coordinates in the host DB unit, cm): the
+// potential heatmap (drawn underneath), each electrode profile, and the traced trajectories.
+// The BEM field and the rays are in metres, so positions are scaled back by metresToCm.
+func renderNodes(electrodes []electrode, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
+	nodes := []wire.GraphicsNode{potentialNode(electrodes, bem)}
+	nodes = append(nodes, electrodeNode(electrodes))
 	nodes = append(nodes, trajectoryNodes(rays)...)
 	return nodes
 }
@@ -38,16 +39,18 @@ func (e *Engine) pushGraphics(nodes []wire.GraphicsNode) error {
 	return err
 }
 
-// electrodeNode draws the sectioned electrode profile as line segments in the xz-plane
-// (x = r, y = 0, z), so the user sees exactly which boundary was solved.
-func electrodeNode(prof *profile) wire.GraphicsNode {
+// electrodeNode draws every sectioned electrode profile as line segments in the xz-plane
+// (x = r, y = 0, z), in cm — so the overlay tracks the host geometry exactly.
+func electrodeNode(electrodes []electrode) wire.GraphicsNode {
 	var coords []float64
 	var indices []int
-	for _, loop := range prof.loops {
-		for i := 0; i+1 < len(loop); i++ {
-			base := len(coords) / 3
-			coords = append(coords, loop[i][0], 0, loop[i][1], loop[i+1][0], 0, loop[i+1][1])
-			indices = append(indices, base, base+1)
+	for _, el := range electrodes {
+		for _, loop := range el.prof.loops {
+			for i := 0; i+1 < len(loop); i++ {
+				base := len(coords) / 3
+				coords = append(coords, loop[i][0], 0, loop[i][1], loop[i+1][0], 0, loop[i+1][1])
+				indices = append(indices, base, base+1)
+			}
 		}
 	}
 	return wire.GraphicsNode{Id: "traceon.electrode", Primitives: []wire.GraphicsPrimitive{{
@@ -56,13 +59,14 @@ func electrodeNode(prof *profile) wire.GraphicsNode {
 	}}}
 }
 
-// trajectoryNodes draws each ray as a connected line strip in the xz-plane.
+// trajectoryNodes draws each ray as a connected line strip in the xz-plane, converting the
+// traced positions from metres back to the host's cm.
 func trajectoryNodes(rays [][]tracing.State) []wire.GraphicsNode {
 	nodes := make([]wire.GraphicsNode, 0, len(rays))
 	for i, ray := range rays {
 		coords := make([]float64, 0, len(ray)*3)
 		for _, s := range ray {
-			coords = append(coords, s[0], s[1], s[2]) // (x, y, z); radial rays lie in y=0
+			coords = append(coords, s[0]*metresToCm, s[1]*metresToCm, s[2]*metresToCm)
 		}
 		nodes = append(nodes, wire.GraphicsNode{
 			Id: "traceon.ray." + itoa(i),
@@ -76,20 +80,22 @@ func trajectoryNodes(rays [][]tracing.State) []wire.GraphicsNode {
 }
 
 // potentialNode samples the electrostatic potential on an (r, z) grid over the study extent
-// and draws it as a semi-transparent flood plot colored by a blue→red mapper. It is the field
-// context the trajectories bend through.
-func potentialNode(prof *profile, bem field.FieldRadialBEM) wire.GraphicsNode {
-	rMax, zMin, zMax := prof.extent()
-	r0, r1 := 0.0, rMax+boundsMargin
-	z0, z1 := zMin-boundsMargin, zMax+boundsMargin
+// and draws it as a semi-transparent flood plot colored by a blue→white→red mapper. The grid
+// is sampled in metres (the field's units) but its vertices are placed in cm for the viewport.
+func potentialNode(electrodes []electrode, bem field.FieldRadialBEM) wire.GraphicsNode {
+	rMaxCm, zMinCm, zMaxCm := combinedExtent(electrodes)
+	// Extend the grid downstream over the drift region (matching the trace) so the focus
+	// crossing is drawn on the same plane as the trajectories.
+	r0, r1 := 0.0, driftRadius*rMaxCm
+	z0, z1 := zMinCm-boundsMargin*metresToCm, zMaxCm+driftFactor*(zMaxCm-zMinCm)
 
 	var coords, scalars []float64
 	for iz := 0; iz < potentialGrid; iz++ {
 		for ir := 0; ir < potentialGrid; ir++ {
-			r := r0 + (r1-r0)*float64(ir)/float64(potentialGrid-1)
-			z := z0 + (z1-z0)*float64(iz)/float64(potentialGrid-1)
-			coords = append(coords, r, 0, z)
-			scalars = append(scalars, bem.PotentialAtPoint(geom2d.Vertex{r, 0, z}))
+			rCm := r0 + (r1-r0)*float64(ir)/float64(potentialGrid-1)
+			zCm := z0 + (z1-z0)*float64(iz)/float64(potentialGrid-1)
+			coords = append(coords, rCm, 0, zCm)
+			scalars = append(scalars, bem.PotentialAtPoint(geom2d.Vertex{rCm * cmToMetres, 0, zCm * cmToMetres}))
 		}
 	}
 	indices := gridTriangles(potentialGrid, potentialGrid)
@@ -138,7 +144,7 @@ func potentialMapper(scalars []float64) wire.GraphicsColorMapper {
 	}
 }
 
-// itoa is a tiny non-allocating-ish integer formatter for node ids (avoids strconv import here).
+// itoa is a tiny integer formatter for node ids (avoids a strconv import here).
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

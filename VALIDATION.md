@@ -71,12 +71,19 @@ add-in would push, with no live app or render backend:
 go run ./cmd/traceonfield > study.json   # 3 elements, 7 rays, 9 graphics nodes
 ```
 
-### Known calibration items (tracked for a follow-up)
+### Calibration (now in the engine)
 
-- **Units.** Host geometry arrives in the DB unit (cm) and the study traces in those units.
-  The trajectory *shape* is faithful; absolute beam dynamics need an explicit cm→m conversion
-  at the engine boundary (the `core/` physics is unit-consistent, so the validation above —
-  run entirely in `core/` units — is unaffected).
-- **Per-electrode voltages.** The engine v1 applies one voltage to the whole sectioned body;
-  a true multi-electrode lens (as in the `core/`-level validation) needs per-face voltage
-  assignment, keyed by face reference key.
+- **Units.** Host geometry (cm) is converted to SI metres for the BEM solve and the tracer,
+  and trajectories are converted back to cm for rendering. The conversion was verified
+  scale-invariant: the same lens solved at scale 1 and scale 0.01 focuses at an identical
+  focal length in geometry units (7.68 / 15.14 for two voltage/energy ratios), exactly as the
+  Laplace + Newton physics predicts.
+- **Per-electrode voltages.** The engine sections *every* solid body and solves them together.
+  Voltages come from the document attribute `traceon/voltages` (a JSON `{bodyIndex: volts}`
+  map); when unset, the einzel convention applies — the panel voltage biases the axially
+  central electrode and the outer electrodes are grounded — so a multi-electrode lens focuses
+  with no extra configuration. Live: a three-tube einzel lens sections to 3 electrodes / 108
+  elements with the central electrode charged (the potential map concentrates there).
+- **Section fidelity.** The (r,z) meridian is the full cross-section boundary (outer wall,
+  end caps, and any bore), so the aperture fields that focus the beam are modelled — not only
+  the outer silhouette.

@@ -9,17 +9,21 @@ import (
 	"strings"
 	"testing"
 
+	"oblikovati.org/api/types"
 	"oblikovati.org/api/wire"
+
+	"oblikovati.org/traceon/core/geom2d"
 )
 
 // fakeHost is a named fake HostCaller (no live host): it answers the wire methods a study
 // issues with canned JSON, records the methods it saw, and captures the client-graphics
 // payload so a test can assert the section→solve→trace→render pipeline ran end to end.
 type fakeHost struct {
-	calls     []string
-	failOn    string // method to fail, for error-path tests ("" = none)
-	facets    wire.FacetSetResult
-	lastGraph wire.SetClientGraphicsArgs
+	calls        []string
+	failOn       string // method to fail, for error-path tests ("" = none)
+	facets       wire.FacetSetResult
+	voltagesJSON string // traceon/voltages attribute payload ("" = unset)
+	lastGraph    wire.SetClientGraphicsArgs
 }
 
 func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
@@ -28,8 +32,18 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		return nil, errors.New("forced failure")
 	}
 	switch method {
+	case wire.MethodBodyList:
+		return json.Marshal(wire.BodyListResult{Bodies: []wire.BodyInfo{{Index: 0, Name: "Solid1", Solid: true, Key: "k0"}}})
 	case wire.MethodBodyCalculateFacets:
 		return json.Marshal(h.facets)
+	case wire.MethodDocumentsList:
+		return json.Marshal(wire.ListDocumentsResult{Documents: []wire.DocumentInfo{{ID: 1, Active: true}}})
+	case wire.MethodAttributesGet:
+		if h.voltagesJSON == "" {
+			return json.Marshal(wire.AttributeResult{Found: false})
+		}
+		return json.Marshal(wire.AttributeResult{Found: true, Attribute: wire.AttributeInfo{
+			Set: attrSet, Name: attrVoltages, Value: types.StringVariant(h.voltagesJSON)}})
 	case wire.MethodClientGraphicsSet:
 		_ = json.Unmarshal(req, &h.lastGraph)
 		return []byte("{}"), nil
@@ -118,6 +132,48 @@ func TestRunStudySectionError(t *testing.T) {
 	h.failOn = wire.MethodBodyCalculateFacets
 	if _, err := NewEngine(h).RunStudy(0); err == nil {
 		t.Error("expected RunStudy to fail when sectioning fails")
+	}
+}
+
+// TestPerElectrodeVoltages checks the traceon/voltages document attribute is parsed into a
+// per-body voltage map (body index → volts).
+func TestPerElectrodeVoltages(t *testing.T) {
+	h := &fakeHost{voltagesJSON: `{"0":0,"1":5000,"2":-250.5}`}
+	v := NewEngine(h).electrodeVoltages()
+	want := map[int]float64{0: 0, 1: 5000, 2: -250.5}
+	if len(v) != len(want) {
+		t.Fatalf("got %d voltages, want %d", len(v), len(want))
+	}
+	for k, w := range want {
+		if v[k] != w {
+			t.Errorf("voltage[%d] = %v, want %v", k, v[k], w)
+		}
+	}
+	// Unset attribute → empty map (falls back to the panel default).
+	if got := NewEngine(&fakeHost{}).electrodeVoltages(); len(got) != 0 {
+		t.Errorf("unset voltages → %v, want empty", got)
+	}
+}
+
+// TestCentralElectrode checks the einzel default picks the axially-central electrode.
+func TestCentralElectrode(t *testing.T) {
+	band := func(lo, hi float64) *profile {
+		return &profile{loops: [][]geom2d.Point2{{{1, lo}, {1, hi}}}}
+	}
+	profs := []*profile{band(-3, -1), band(-0.5, 0.5), band(1, 3)}
+	if got := centralElectrode(profs); got != 1 {
+		t.Errorf("central electrode = %d, want 1 (the middle one)", got)
+	}
+}
+
+// TestStudyReportsElectrodeCount checks the result reports one electrode for the single body.
+func TestStudyReportsElectrodeCount(t *testing.T) {
+	res, err := NewEngine(cylinderHost()).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.ElectrodeCount != 1 {
+		t.Errorf("ElectrodeCount = %d, want 1", res.ElectrodeCount)
 	}
 }
 

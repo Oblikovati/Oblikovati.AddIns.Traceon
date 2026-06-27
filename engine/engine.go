@@ -9,6 +9,8 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"sync"
 
 	"oblikovati.org/api/client"
@@ -50,6 +52,16 @@ func NewEngine(host HostCaller) *Engine {
 // RunStudyCommandID is the host command the add-in registers; firing it (a ribbon click or
 // the MCP bridge's execute_command) runs the electron-optics study on the active part.
 const RunStudyCommandID = "Traceon.RunStudy"
+
+// studySummary formats the one-line status reported after a completed study, including the
+// axial focus when the beam crosses the optical axis.
+func studySummary(res *StudyResult) string {
+	s := fmt.Sprintf("Traceon: %d electrode(s), %d elements, %d rays", res.ElectrodeCount, res.ElementCount, res.RayCount)
+	if !math.IsNaN(res.FocusZ) {
+		s += fmt.Sprintf(" — focus z = %.3f cm", res.FocusZ)
+	}
+	return s
+}
 
 // RegisterCommands registers the study command with the host so it is invokable the same way a
 // ribbon click is — including over the MCP bridge's execute_command. The host action is a no-op;
@@ -125,10 +137,11 @@ func (e *Engine) launchStudy() {
 			e.running = false
 			e.mu.Unlock()
 		}()
-		if _, err := e.RunStudy(0); err != nil {
+		res, err := e.RunStudy(0)
+		if err != nil {
 			_, _ = e.api.Status().SetText("Traceon study failed: " + err.Error())
 			return
 		}
-		_, _ = e.api.Status().SetText("Traceon study complete")
+		_, _ = e.api.Status().SetText(studySummary(res))
 	}()
 }
