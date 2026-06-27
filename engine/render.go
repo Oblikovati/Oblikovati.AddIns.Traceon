@@ -16,6 +16,22 @@ import (
 // profiles + trajectories + potential map). Re-running the study replaces the whole group.
 const graphicsClientID = "com.oblikovati.traceon.study"
 
+// worldFromEngine maps an engine-frame point to the host world frame. The BEM/tracer work in the
+// Traceon convention — radial in the XY plane, optical axis +Z — while the host bodies are surfaces
+// of revolution about world Y (CalculateFacets / the section map host Y to the meridian's axial
+// coordinate). Without this remap the overlay would render with its optical axis on world Z,
+// perpendicular to the lens it describes (the field + trajectories would cross the electrode stack
+// sideways). Swapping Y and Z puts the optical axis back on world Y, on top of the geometry.
+func worldFromEngine(x, y, z float64) (float64, float64, float64) {
+	return x, z, y
+}
+
+// appendWorld appends one engine-frame point to a flat xyz coordinate slice, remapped to world axes.
+func appendWorld(coords []float64, x, y, z float64) []float64 {
+	wx, wy, wz := worldFromEngine(x, y, z)
+	return append(coords, wx, wy, wz)
+}
+
 // potentialGrid is the (r, z) sampling resolution for the potential heatmap.
 const potentialGrid = 40
 
@@ -67,7 +83,8 @@ func electrodeNode(electrodes []electrode) wire.GraphicsNode {
 		for _, loop := range el.prof.loops {
 			for i := 0; i+1 < len(loop); i++ {
 				base := len(coords) / 3
-				coords = append(coords, loop[i][0], 0, loop[i][1], loop[i+1][0], 0, loop[i+1][1])
+				coords = appendWorld(coords, loop[i][0], 0, loop[i][1])
+				coords = appendWorld(coords, loop[i+1][0], 0, loop[i+1][1])
 				indices = append(indices, base, base+1)
 			}
 		}
@@ -85,7 +102,7 @@ func trajectoryNodes(rays [][]tracing.State) []wire.GraphicsNode {
 	for i, ray := range rays {
 		coords := make([]float64, 0, len(ray)*3)
 		for _, s := range ray {
-			coords = append(coords, s[0]*metresToCm, s[1]*metresToCm, s[2]*metresToCm)
+			coords = appendWorld(coords, s[0]*metresToCm, s[1]*metresToCm, s[2]*metresToCm)
 		}
 		nodes = append(nodes, wire.GraphicsNode{
 			Id: "traceon.ray." + itoa(i),
@@ -113,7 +130,7 @@ func potentialNode(electrodes []electrode, bem field.FieldRadialBEM) wire.Graphi
 		for ir := 0; ir < potentialGrid; ir++ {
 			rCm := r0 + (r1-r0)*float64(ir)/float64(potentialGrid-1)
 			zCm := z0 + (z1-z0)*float64(iz)/float64(potentialGrid-1)
-			coords = append(coords, rCm, 0, zCm)
+			coords = appendWorld(coords, rCm, 0, zCm)
 			scalars = append(scalars, bem.PotentialAtPoint(geom2d.Vertex{rCm * cmToMetres, 0, zCm * cmToMetres}))
 		}
 	}

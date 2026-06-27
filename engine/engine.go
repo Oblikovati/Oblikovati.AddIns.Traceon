@@ -46,6 +46,14 @@ type studyParams struct {
 	// currently-selected face (electrode = volts, coil = amperes, magnet = A·m⁻¹, iron = μr).
 	assignRole  string
 	assignValue float64
+
+	// Parameter sweep: vary the host model parameter sweepParam linearly over [sweepStart,
+	// sweepStop] in sweepSteps samples (expressed in the parameter's own unit), recomputing and
+	// re-solving the study at each, to plot the axial focus against the parameter.
+	sweepParam string
+	sweepStart float64
+	sweepStop  float64
+	sweepSteps int
 }
 
 func defaultParams() studyParams {
@@ -53,6 +61,7 @@ func defaultParams() studyParams {
 		voltage: 1000, energyEV: 1000, numRays: 7, coilCurrent: 1000, magnetisation: 1e6, permeability: 1000,
 		lens: lensHost, lensRadius: 0.3, lensThickness: 0.5, lensSpacing: 0.5,
 		assignRole: "electrode", assignValue: 1000,
+		sweepSteps: 9,
 	}
 }
 
@@ -83,6 +92,9 @@ const (
 	// AssignSelectionCommandID tags the body owning the selected face with the panel's role +
 	// value, so a user picks an electrode in the viewport and assigns its excitation.
 	AssignSelectionCommandID = "Traceon.AssignSelection"
+	// ParameterSweepCommandID varies a host model parameter over a range, re-solving the study at
+	// each value, and plots the axial focus against the parameter.
+	ParameterSweepCommandID = "Traceon.RunParameterSweep"
 )
 
 // lensForCommand maps a parametric-lens command to the lens it selects, and reports whether the
@@ -122,6 +134,8 @@ func (e *Engine) RegisterCommands() error {
 			Tooltip: "Build a two-cylinder immersion lens parametrically (no host geometry) and run the study."},
 		{ID: AssignSelectionCommandID, DisplayName: "Assign Excitation to Selection", Category: "Traceon",
 			Tooltip: "Tag the body owning the selected face with the panel's role and value (electrode/coil/magnet/iron)."},
+		{ID: ParameterSweepCommandID, DisplayName: "Run Parameter Sweep", Category: "Traceon",
+			Tooltip: "Vary a host model parameter over a range, re-solving at each value, and plot the axial focus against it."},
 	}
 	for _, c := range cmds {
 		if _, err := e.api.Commands().Create(c); err != nil {
@@ -170,6 +184,8 @@ func (e *Engine) Notify(ev []byte) {
 			e.launchStudy()
 		} else if c.Command == AssignSelectionCommandID {
 			e.launchAssign()
+		} else if c.Command == ParameterSweepCommandID {
+			e.launchSweep()
 		} else if c.Command == RunStudyCommandID {
 			e.launchStudy()
 		}
@@ -219,6 +235,33 @@ func (e *Engine) launchAssign() {
 		msg, err := e.assignToSelection()
 		if err != nil {
 			_, _ = e.api.Status().SetText("Traceon assign failed: " + err.Error())
+			return
+		}
+		_, _ = e.api.Status().SetText(msg)
+	}()
+}
+
+// launchSweep runs a parameter sweep on a SEPARATE goroutine (it issues many host calls —
+// parameter set, recompute, solve — per step), coalescing with any in-flight study so the two do
+// not race on the host, and reports the outcome to the status bar.
+func (e *Engine) launchSweep() {
+	e.mu.Lock()
+	if e.running {
+		e.mu.Unlock()
+		return
+	}
+	e.running = true
+	e.mu.Unlock()
+
+	go func() {
+		defer func() {
+			e.mu.Lock()
+			e.running = false
+			e.mu.Unlock()
+		}()
+		msg, err := e.runSweep()
+		if err != nil {
+			_, _ = e.api.Status().SetText("Traceon sweep failed: " + err.Error())
 			return
 		}
 		_, _ = e.api.Status().SetText(msg)

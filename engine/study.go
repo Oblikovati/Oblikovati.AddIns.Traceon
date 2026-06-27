@@ -90,6 +90,21 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	params := e.params
 	e.mu.Unlock()
 
+	res, nodes, err := e.computeStudy(params)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.pushGraphics(nodes); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// computeStudy runs the whole electron-optics pipeline for one parameter set — section/build →
+// solve → trace — and returns the result plus the overlay nodes WITHOUT pushing them. RunStudy
+// pushes them; a parameter sweep calls computeStudy per step and discards the nodes (it renders
+// its own focus-vs-parameter plot instead), so each sweep step does not flicker the viewport.
+func (e *Engine) computeStudy(params studyParams) (*StudyResult, []wire.GraphicsNode, error) {
 	var (
 		electrodes []electrode
 		coils      []coil
@@ -100,13 +115,13 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	if params.lens != lensHost {
 		electrodes, err = buildParametricLens(params)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else if electrodes, coils, magnets, irons, err = e.collectBodies(params); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(electrodes)+len(coils)+len(magnets)+len(irons) == 0 {
-		return nil, fmt.Errorf("no electrodes: select a parametric lens or open a part with solid bodies")
+		return nil, nil, fmt.Errorf("no electrodes: select a parametric lens or open a part with solid bodies")
 	}
 
 	// Electrostatic charges from the electrode boundaries; magnetic current rings from the
@@ -118,7 +133,7 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	if len(lines) > 0 {
 		elec, err = solver.SolveElectrostatic(lines, types, values)
 		if err != nil {
-			return nil, fmt.Errorf("solve electrostatic: %w", err)
+			return nil, nil, fmt.Errorf("solve electrostatic: %w", err)
 		}
 	}
 	current := buildCoilCharges(coils)
@@ -126,7 +141,7 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	if len(irons) > 0 {
 		mag, err = solveIronResponse(mag, current, irons)
 		if err != nil {
-			return nil, fmt.Errorf("solve magnetizable iron: %w", err)
+			return nil, nil, fmt.Errorf("solve magnetizable iron: %w", err)
 		}
 	}
 	bem := field.NewFieldRadialBEMFull(elec, mag, current)
@@ -143,9 +158,6 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	rays := e.traceBeam(eEval, bem, electrodes, coils, magnets, irons, params)
 
 	nodes := renderNodes(electrodes, coils, magnets, irons, bem, rays)
-	if err := e.pushGraphics(nodes); err != nil {
-		return nil, err
-	}
 	return &StudyResult{
 		ElectrodeCount:   len(electrodes),
 		CoilCount:        len(coils),
@@ -155,7 +167,7 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 		RayCount:         len(rays),
 		FocusZ:           focusZcm(rays),
 		GraphicsClientID: graphicsClientID,
-	}, nil
+	}, nodes, nil
 }
 
 // solveIronResponse solves for the magnetisation induced in the magnetizable iron by the

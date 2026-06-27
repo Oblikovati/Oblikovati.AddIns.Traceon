@@ -343,6 +343,7 @@ type graphicsLines struct {
 
 func (g *graphicsLines) add(a, b geom2d.Point2) {
 	base := len(g.coords) / 3
-	g.coords = append(g.coords, a[0], 0, a[1], b[0], 0, b[1])
+	g.coords = appendWorld(g.coords, a[0], 0, a[1])
+	g.coords = appendWorld(g.coords, b[0], 0, b[1])
 	g.indices = append(g.indices, base, base+1)
 }

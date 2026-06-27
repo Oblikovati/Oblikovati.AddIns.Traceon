@@ -47,6 +47,13 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 			client.PanelValueEditor("assign_value", "Value (V/A/A·m⁻¹/μr)", strconv.FormatFloat(p.assignValue, 'g', -1, 64)),
 			client.PanelButton("assign", "Assign to selected face's body", AssignSelectionCommandID),
 			client.PanelSeparator(),
+			client.PanelLabel("sweep_hdr", "— Parameter sweep (host geometry) —"),
+			client.PanelValueEditor("sweep_param", "Parameter name", p.sweepParam),
+			client.PanelValueEditor("sweep_start", "Start value", strconv.FormatFloat(p.sweepStart, 'g', -1, 64)),
+			client.PanelValueEditor("sweep_stop", "Stop value", strconv.FormatFloat(p.sweepStop, 'g', -1, 64)),
+			client.PanelValueEditor("sweep_steps", "Steps", strconv.Itoa(p.sweepSteps)),
+			client.PanelButton("sweep", "Run parameter sweep (focus vs param)", ParameterSweepCommandID),
+			client.PanelSeparator(),
 			client.PanelButton("run", "Run Electron-Optics Study", RunStudyCommandID),
 		},
 	})
@@ -93,6 +100,16 @@ func (e *Engine) applyPanelEdit(controlID, value string) {
 		}
 	case "assign_value":
 		e.params.assignValue = simNum(value, e.params.assignValue)
+	case "sweep_param":
+		e.params.sweepParam = strings.TrimSpace(value)
+	case "sweep_start":
+		e.params.sweepStart = simNum(value, e.params.sweepStart)
+	case "sweep_stop":
+		e.params.sweepStop = simNum(value, e.params.sweepStop)
+	case "sweep_steps":
+		if n := int(simNum(value, float64(e.params.sweepSteps))); n >= minSweepSteps {
+			e.params.sweepSteps = n
+		}
 	}
 }
 
