@@ -22,7 +22,7 @@ const potentialGrid = 40
 // renderNodes assembles the study overlay (all coordinates in the host DB unit, cm): the
 // potential heatmap (drawn underneath), the electrode and coil profiles, and the traced
 // trajectories. The BEM field and the rays are in metres, so positions are scaled by metresToCm.
-func renderNodes(electrodes []electrode, coils []coil, magnets []magnet, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
+func renderNodes(electrodes []electrode, coils []coil, magnets []magnet, irons []iron, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
 	var nodes []wire.GraphicsNode
 	if len(electrodes) > 0 {
 		nodes = append(nodes, potentialNode(electrodes, bem), electrodeNode(electrodes))
@@ -32,6 +32,9 @@ func renderNodes(electrodes []electrode, coils []coil, magnets []magnet, bem fie
 	}
 	if lines, ok := magnetNode(magnets); ok {
 		nodes = append(nodes, outlineNode("traceon.magnets", lines, []float32{0.6, 0.3, 0.8, 1})) // violet
+	}
+	if lines, ok := ironNode(irons); ok {
+		nodes = append(nodes, outlineNode("traceon.iron", lines, []float32{0.5, 0.55, 0.6, 1})) // steel grey
 	}
 	nodes = append(nodes, trajectoryNodes(rays)...)
 	return nodes

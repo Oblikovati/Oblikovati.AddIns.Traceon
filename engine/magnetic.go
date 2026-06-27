@@ -18,8 +18,9 @@ import (
 // per-magnet axial magnetisations: JSON objects mapping body index (as a string) to amperes
 // and to A/m respectively, e.g. {"3": 2.5}.
 const (
-	attrCurrents = "currents"
-	attrMagnets  = "magnets"
+	attrCurrents     = "currents"
+	attrMagnets      = "magnets"
+	attrPermeability = "permeability"
 )
 
 // coilTriGrid is the (r, z) triangulation resolution for a coil cross-section: the bounding
@@ -100,6 +101,32 @@ func (e *Engine) magnetMagnetisations() map[int]float64 {
 	return e.floatAttributeMap(attrMagnets)
 }
 
+// ironPermeabilities reads the per-iron relative-permeability map (body index → μr) from the
+// active document's traceon/permeability attribute.
+func (e *Engine) ironPermeabilities() map[int]float64 {
+	return e.floatAttributeMap(attrPermeability)
+}
+
+// isIron reports whether a body is a magnetizable (soft-magnetic) body that RESPONDS to the
+// field — it has a permeability in the traceon/permeability attribute, or its name contains
+// "iron" or "magnetizable". The resolved relative permeability is returned.
+func isIron(index int, name string, perms map[int]float64, defaultMu float64) (float64, bool) {
+	if mu, ok := perms[index]; ok {
+		return mu, true
+	}
+	n := strings.ToLower(name)
+	if strings.Contains(n, "iron") || strings.Contains(n, "magnetizable") {
+		return defaultMu, true
+	}
+	return 0, false
+}
+
+// iron is a sectioned magnetizable body: its (r, z) cross-section (cm) and relative permeability.
+type iron struct {
+	prof         *profile
+	permeability float64
+}
+
 // floatAttributeMap reads a JSON {bodyIndex: value} attribute in the traceon set into a map.
 func (e *Engine) floatAttributeMap(name string) map[int]float64 {
 	out := map[int]float64{}
@@ -157,6 +184,68 @@ func buildCoilCharges(coils []coil) solver.CurrentCharges {
 	}
 	jac, pos := geom3d.FillJacobianBuffer3D(tris)
 	return solver.CurrentCharges{Currents: currents, Jac: jac, Pos: pos}
+}
+
+// buildIronCharges solves for the magnetisation induced in the magnetizable bodies by the
+// pre-existing field (the coils' and permanent magnets' field, supplied as preField), and
+// returns the resulting magnetostatic surface charges. Mirrors MagnetostaticSolverRadial's
+// magnetizable solve: each iron boundary element is a Magnetizable row whose right-hand side
+// is the negated pre-field flux through its normal.
+func buildIronCharges(irons []iron, preField solver.PreField) (solver.EffectivePointCharges, error) {
+	var lines []radial.Line
+	var perms []float64
+	for _, ir := range irons {
+		il, _, _ := ir.prof.lineElements(0, cmToMetres)
+		for _, l := range il {
+			lines = append(lines, l)
+			perms = append(perms, ir.permeability)
+		}
+	}
+	if len(lines) == 0 {
+		return solver.EffectivePointCharges{}, nil
+	}
+	types := make([]radial.ExcitationType, len(lines))
+	for i := range types {
+		types[i] = radial.Magnetizable
+	}
+	return solver.SolveMagnetostatic(lines, types, perms, preField)
+}
+
+// combineCharges concatenates two effective-charge sets (their charges, Jacobian and position
+// buffers) into one — used to merge the permanent-magnet and induced-iron magnetostatic charges.
+func combineCharges(a, b solver.EffectivePointCharges) solver.EffectivePointCharges {
+	if len(a.Charges) == 0 {
+		return b
+	}
+	if len(b.Charges) == 0 {
+		return a
+	}
+	return solver.EffectivePointCharges{
+		Charges: append(append([]float64{}, a.Charges...), b.Charges...),
+		Jac:     append(append(radial.JacobianBuffer{}, a.Jac...), b.Jac...),
+		Pos:     append(append(radial.PositionBuffer{}, a.Pos...), b.Pos...),
+	}
+}
+
+// ironExtent returns the (r, z) bounding box (cm) spanning every iron body.
+func ironExtent(irons []iron) (rMax, zMin, zMax float64) {
+	rMax, zMin, zMax = 0, math.Inf(1), math.Inf(-1)
+	for _, ir := range irons {
+		r, lo, hi := ir.prof.extent()
+		rMax = math.Max(rMax, r)
+		zMin = math.Min(zMin, lo)
+		zMax = math.Max(zMax, hi)
+	}
+	return rMax, zMin, zMax
+}
+
+// ironNode draws each iron cross-section outline (cm).
+func ironNode(irons []iron) (graphicsLines, bool) {
+	return profilesNode(func(yield func(*profile)) {
+		for _, ir := range irons {
+			yield(ir.prof)
+		}
+	})
 }
 
 // triangulateCrossSection fills the coil's (r, z) cross-section with triangles in the meridian
