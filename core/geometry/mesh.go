@@ -26,22 +26,7 @@ type MeshOptions struct {
 // Flat meshing yields straight 2-node lines; HigherOrder yields curved 4-node line4
 // elements ordered [start, end, node@1/3, node@2/3]. Mirrors geometry.Path.mesh.
 func (p Path) Mesh(opts MeshOptions) *mesh.Mesh {
-	nFactor := 1
-	if opts.HigherOrder {
-		nFactor = 3
-	}
-	u := discretizePath(p.Length, p.Breakpoints, opts.MeshSize, opts.MeshSizeFactor, nFactor)
-
-	points := make([]geom2d.Vertex, len(u))
-	for i, t := range u {
-		points[i] = p.Fun(t)
-	}
-	lines := elementIndices(len(u), opts.HigherOrder)
-
-	name := opts.Name
-	if name == "" {
-		name = p.Name
-	}
+	points, lines, name := p.discretize(opts)
 	physical := map[string][]int{}
 	if name != "" {
 		idxs := make([]int, len(lines))
@@ -51,6 +36,59 @@ func (p Path) Mesh(opts MeshOptions) *mesh.Mesh {
 		physical[name] = idxs
 	}
 	return mesh.New(points, lines, physical, opts.EnsureOutwardNormals)
+}
+
+// MeshGroup meshes several named paths into one radial mesh, each path becoming its own
+// physical group (electrode) keyed by its Name. Points coincident across paths — e.g. the
+// shared junction node where one electrode abuts the next — are merged by the mesh dedup.
+// Mirrors meshing a path collection: (a + b + c).mesh(...). opts.Name is ignored; every path
+// must carry its own Name (set via WithName) to be assignable later.
+func MeshGroup(paths []Path, opts MeshOptions) *mesh.Mesh {
+	opts.Name = "" // each path's own Name names its group
+
+	var allPoints []geom2d.Vertex
+	var allLines [][]int
+	physical := map[string][]int{}
+	for _, p := range paths {
+		points, lines, name := p.discretize(opts)
+		offset := len(allPoints)
+		base := len(allLines)
+		allPoints = append(allPoints, points...)
+		for i, line := range lines {
+			shifted := make([]int, len(line))
+			for j, idx := range line {
+				shifted[j] = idx + offset
+			}
+			allLines = append(allLines, shifted)
+			if name != "" {
+				physical[name] = append(physical[name], base+i)
+			}
+		}
+	}
+	return mesh.New(allPoints, allLines, physical, opts.EnsureOutwardNormals)
+}
+
+// discretize samples the path into node points and builds the (offset-free) line index array:
+// straight 2-node lines, or curved 4-node line4 elements when HigherOrder. name is opts.Name,
+// falling back to the path's own Name. The shared core of Mesh and MeshGroup.
+func (p Path) discretize(opts MeshOptions) (points []geom2d.Vertex, lines [][]int, name string) {
+	nFactor := 1
+	if opts.HigherOrder {
+		nFactor = 3
+	}
+	u := discretizePath(p.Length, p.Breakpoints, opts.MeshSize, opts.MeshSizeFactor, nFactor)
+
+	points = make([]geom2d.Vertex, len(u))
+	for i, t := range u {
+		points[i] = p.Fun(t)
+	}
+	lines = elementIndices(len(u), opts.HigherOrder)
+
+	name = opts.Name
+	if name == "" {
+		name = p.Name
+	}
+	return points, lines, name
 }
 
 // elementIndices builds the line index array for n sampled points: straight [k, k+1] pairs
