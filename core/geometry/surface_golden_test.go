@@ -29,6 +29,10 @@ func buildSurfaceCase(name string) *mesh.TriangleMesh {
 		return DiskXZ(0, 0, 1.0).Mesh(0.5)
 	case "plate_sections":
 		return flatPlane(2.0, 1.0).Mesh(0.5)
+	case "rect_factor":
+		return RectangleXZSurface(2, 3, 2, 3).MeshByFactor(16)
+	case "rect_size":
+		return RectangleXZSurface(2, 3, 2, 3).Mesh(0.1)
 	default:
 		return nil
 	}

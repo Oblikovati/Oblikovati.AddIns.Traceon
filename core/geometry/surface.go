@@ -96,3 +96,22 @@ func (p Path) RevolveY(angle float64) Surface {
 func DiskXZ(x0, z0, radius float64) Surface {
 	return Line(Point{0, 0, 0}, Point{radius, 0, 0}).RevolveY(2 * math.Pi).Move(x0, 0, z0)
 }
+
+// Extrude sweeps the path along vector, producing a surface: the path at v=0, linearly
+// translated to path+vector at v=|vector|. Port of Path.extrude.
+func (p Path) Extrude(vector Point) Surface {
+	length := math.Sqrt(vector[0]*vector[0] + vector[1]*vector[1] + vector[2]*vector[2])
+	fun := func(u, v float64) Point {
+		pt := p.Fun(u)
+		s := v / length
+		return Point{pt[0] + s*vector[0], pt[1] + s*vector[1], pt[2] + s*vector[2]}
+	}
+	return Surface{Fun: fun, PathLength1: p.Length, PathLength2: length, Breakpoints1: p.Breakpoints, Name: p.Name}
+}
+
+// RectangleXZSurface builds a filled rectangle region in the xz-plane (a coil's solid
+// cross-section): the left edge line [xmin,zmin]→[xmin,zmax] extruded across in +x by
+// (xmax−xmin). Port of Surface.rectangle_xz.
+func RectangleXZSurface(xmin, xmax, zmin, zmax float64) Surface {
+	return Line(Point{xmin, 0, zmin}, Point{xmin, 0, zmax}).Extrude(Point{xmax - xmin, 0, 0})
+}
