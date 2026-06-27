@@ -28,7 +28,7 @@ func (e *Engine) ShowPanel() (wire.OKResult, error) {
 		Visible: true,
 		Controls: []wire.PanelControlSpec{
 			client.PanelLabel("hdr", "— Simulation parameters —"),
-			client.PanelValueEditor("voltage", "Electrode voltage (V)", strconv.FormatFloat(p.voltage, 'g', -1, 64)),
+			client.PanelValueEditor("voltage", "Central electrode (V)", strconv.FormatFloat(p.voltage, 'g', -1, 64)),
 			client.PanelValueEditor("energy", "Beam energy (eV)", strconv.FormatFloat(p.energyEV, 'g', -1, 64)),
 			client.PanelValueEditor("rays", "Number of rays", strconv.Itoa(p.numRays)),
 			client.PanelSeparator(),

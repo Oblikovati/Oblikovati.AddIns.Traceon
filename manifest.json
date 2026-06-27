@@ -12,6 +12,7 @@
     "model",
     "body",
     "materials",
+    "attributes",
     "clientGraphics",
     "interactionGraphics"
   ]
