@@ -3,6 +3,7 @@
 package field
 
 import (
+	"math"
 	"testing"
 
 	"oblikovati.org/traceon/core/geom2d"
@@ -53,6 +54,32 @@ func load(t *testing.T) (fieldGolden, solver.EffectivePointCharges) {
 	lines := fx.lines()
 	jac, pos := radial.FillJacobianBufferRadial(lines)
 	return fx, solver.EffectivePointCharges{Charges: fx.floats(fx.Charges), Jac: jac, Pos: pos}
+}
+
+// TestChargeOnElements verifies the per-element charge integral: for each ring, the surface
+// charge density times the ring area 2π·Σ(jac·r), summed over the given indices.
+func TestChargeOnElements(t *testing.T) {
+	_, epc := load(t)
+	f := NewFieldRadialBEM(epc)
+
+	// Whole-electrode charge equals the sum of the per-element integrals computed inline.
+	all := make([]int, len(epc.Charges))
+	want := 0.0
+	for i := range epc.Charges {
+		all[i] = i
+		area := 0.0
+		for k := 0; k < radial.NQuad2D; k++ {
+			area += epc.Jac[i][k] * epc.Pos[i][k][0]
+		}
+		want += 2 * math.Pi * area * epc.Charges[i]
+	}
+	if got := f.ChargeOnElements(all); math.Abs(got-want) > 1e-12*math.Abs(want)+1e-15 {
+		t.Errorf("ChargeOnElements(all) = %g, want %g", got, want)
+	}
+	// An empty selection contributes no charge.
+	if got := f.ChargeOnElements(nil); got != 0 {
+		t.Errorf("ChargeOnElements(nil) = %g, want 0", got)
+	}
 }
 
 // TestAxialDerivatives verifies the accumulated on-axis derivatives match upstream.

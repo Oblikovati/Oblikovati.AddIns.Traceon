@@ -150,6 +150,43 @@ func TestMagnetostaticBoundary(t *testing.T) {
 	}
 }
 
+// TestElectrostaticGroupIndices checks the name→active-index map covers every active element
+// exactly once, in active order, matching the slice Electrostatic returns.
+func TestElectrostaticGroupIndices(t *testing.T) {
+	exc := New(twoElectrodeMesh())
+	exc.AddVoltage("a", 1)
+	exc.AddVoltage("b", 2)
+
+	lines, _, _ := exc.Electrostatic()
+	groups := exc.ElectrostaticGroupIndices()
+
+	// Every active element index appears in exactly one group, covering [0, len(lines)).
+	seen := make([]bool, len(lines))
+	for _, idxs := range groups {
+		for _, i := range idxs {
+			if i < 0 || i >= len(lines) {
+				t.Fatalf("group index %d out of range [0,%d)", i, len(lines))
+			}
+			if seen[i] {
+				t.Errorf("active index %d appears in more than one group", i)
+			}
+			seen[i] = true
+		}
+	}
+	for i, ok := range seen {
+		if !ok {
+			t.Errorf("active index %d missing from all groups", i)
+		}
+	}
+	// Electrode "a" owns the first two elements, "b" the third.
+	if got := groups["a"]; len(got) != 2 {
+		t.Errorf("group a = %v, want 2 indices", got)
+	}
+	if got := groups["b"]; len(got) != 1 {
+		t.Errorf("group b = %v, want 1 index", got)
+	}
+}
+
 // TestAssignUnknownElectrodePanics checks assigning to a non-existent electrode is rejected.
 func TestAssignUnknownElectrodePanics(t *testing.T) {
 	defer func() {
