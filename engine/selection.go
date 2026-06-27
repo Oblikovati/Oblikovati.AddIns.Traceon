@@ -3,7 +3,9 @@
 package engine
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"oblikovati.org/api/types"
 )
@@ -18,6 +20,22 @@ const (
 
 // assignRoles are the excitation roles the panel offers; any other text falls back to electrode.
 var assignRoles = map[string]bool{"electrode": true, "coil": true, "magnet": true, "iron": true}
+
+// normalizeRef converts a viewport selection ref to the raw reference-key form that
+// model.referenceKeys returns. The selection canonicalises a picked entity to "<kind>/<base64url
+// of the reference key>" (e.g. "face/A1Jl…"), whereas referenceKeys returns the raw key bytes; so
+// strip the kind prefix and base64-decode to match. A ref without that shape passes through.
+func normalizeRef(ref string) string {
+	i := strings.IndexByte(ref, '/')
+	if i < 0 {
+		return ref
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(ref[i+1:])
+	if err != nil {
+		return ref
+	}
+	return string(raw)
+}
 
 // faceToBody maps every face/edge/vertex reference key (and each body's own key) to the reference
 // key of the body that owns it, so a viewport pick — which selects faces — resolves to the body
@@ -82,7 +100,7 @@ func (e *Engine) assignToSelection() (string, error) {
 
 	bodies := map[string]bool{}
 	for _, ref := range sel.Refs {
-		if key, ok := owner[ref]; ok {
+		if key, ok := owner[normalizeRef(ref)]; ok {
 			bodies[key] = true
 		}
 	}

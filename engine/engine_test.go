@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"math"
@@ -560,9 +561,24 @@ func TestExtractProfileRejectsBox(t *testing.T) {
 func selectionHost() *fakeHost {
 	h := ringHost()
 	h.bodies = []wire.BodyInfo{{Index: 0, Name: "Electrode", Solid: true, Key: "b0"}}
-	h.refBodies = []wire.BodyTopology{{Faces: []wire.TopologyRef{{Key: "f0"}, {Key: "f1"}}}}
-	h.selRefs = []string{"f0"}
+	// referenceKeys returns RAW keys; the viewport selection canonicalises to "<kind>/<base64>".
+	rawFace := "\x03Revolution1:wall#1"
+	h.refBodies = []wire.BodyTopology{{Faces: []wire.TopologyRef{{Key: rawFace}, {Key: "f1"}}}}
+	h.selRefs = []string{"face/" + base64.RawURLEncoding.EncodeToString([]byte(rawFace))}
 	return h
+}
+
+// TestNormalizeRef checks a canonical "<kind>/<base64>" selection ref decodes to the raw
+// reference-key form (and a plain ref passes through).
+func TestNormalizeRef(t *testing.T) {
+	raw := "\x03Revolution1:wall#1"
+	canonical := "face/" + base64.RawURLEncoding.EncodeToString([]byte(raw))
+	if got := normalizeRef(canonical); got != raw {
+		t.Errorf("normalizeRef(%q) = %q, want the raw key", canonical, got)
+	}
+	if got := normalizeRef("already-raw"); got != "already-raw" {
+		t.Errorf("normalizeRef passthrough = %q, want unchanged", got)
+	}
 }
 
 // TestFaceToBody checks a selected face resolves to its owning body's reference key.
@@ -571,8 +587,14 @@ func TestFaceToBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("faceToBody: %v", err)
 	}
-	if owner["f0"] != "b0" || owner["f1"] != "b0" || owner["b0"] != "b0" {
-		t.Errorf("owner map = %v, want f0/f1/b0 → b0", owner)
+	// Every face/edge/vertex and the body's own key resolve to the body "b0".
+	if len(owner) != 3 || owner["f1"] != "b0" || owner["b0"] != "b0" {
+		t.Errorf("owner map = %v, want every entry → b0", owner)
+	}
+	for ref, body := range owner {
+		if body != "b0" {
+			t.Errorf("owner[%q] = %q, want b0", ref, body)
+		}
 	}
 }
 
