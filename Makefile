@@ -47,7 +47,7 @@ install: build ## Build then copy the library + manifest into $(ADDINS_DIR)
 	@echo "installed $(LIB) -> $(ADDINS_DIR)"
 
 test: ## Run the add-in tests (pure-Go core + engine; cmd is compile-checked)
-	CGO_ENABLED=0 go test ./core/... ./engine/... ./cmd/...
+	CGO_ENABLED=0 go test ./core/... ./engine/... ./cmd/... ./validation/...
 
 # Regenerate golden fixtures from the upstream Traceon clone, then run the Go suite so
 # numerical equivalence is reproducible and drift is caught. TRACEON_DIR points at the
