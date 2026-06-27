@@ -39,8 +39,21 @@ exactly as the trajectory numbers assert.
 
 ## Live in-application validation
 
-The add-in itself is driven from the running application; the study is `Traceon.RunStudy`
-(a ribbon command, also invokable over the MCP bridge's `execute_command`). To validate live:
+This was run end to end against the live application: the head was launched with the MCP
+bridge + Traceon add-ins, an axisymmetric tube electrode was built over MCP, and
+`Traceon.RunStudy` was fired. The study sectioned the body, solved, traced, and rendered its
+overlay — the potential heatmap and the particle trajectories — into the viewport, with a
+"Traceon study complete" status:
+
+![live study](validation/testdata/live_study.png)
+
+The dockable **Traceon Electron Optics** panel (electrode voltage / beam energy / ray count +
+Run button) is visible on the right.
+
+### Procedure
+
+The add-in is driven from the running application; the study is `Traceon.RunStudy` (a ribbon
+command, also invokable over the MCP bridge's `execute_command`). To reproduce:
 
 1. `make install` — builds the c-shared library and copies it + `manifest.json` into the
    host's `addins/` directory (the host scans it at startup).

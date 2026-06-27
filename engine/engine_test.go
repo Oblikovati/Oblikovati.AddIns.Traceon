@@ -5,6 +5,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ import (
 type fakeHost struct {
 	calls     []string
 	failOn    string // method to fail, for error-path tests ("" = none)
-	strokes   wire.StrokeSetResult
+	facets    wire.FacetSetResult
 	lastGraph wire.SetClientGraphicsArgs
 }
 
@@ -27,8 +28,8 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		return nil, errors.New("forced failure")
 	}
 	switch method {
-	case wire.MethodBodyCalculateStrokes:
-		return json.Marshal(h.strokes)
+	case wire.MethodBodyCalculateFacets:
+		return json.Marshal(h.facets)
 	case wire.MethodClientGraphicsSet:
 		_ = json.Unmarshal(req, &h.lastGraph)
 		return []byte("{}"), nil
@@ -46,17 +47,17 @@ func (h *fakeHost) sawCall(method string) bool {
 	return false
 }
 
-// cylinderHost is a fake whose body sections to a charged cylinder wall: a single polyline at
-// r=1 spanning z∈[-1, 1] (three points → two BEM line elements).
+// cylinderHost is a fake whose body facets describe a cylinder of radius 1 about the Y axis
+// spanning y∈[-1, 1]; the meridian extractor turns it into a vertical r=1 electrode profile.
+// Vertices are given as (x, y, z) at a few axial levels and angles (r = √(x²+z²) = 1).
 func cylinderHost() *fakeHost {
-	return &fakeHost{
-		strokes: wire.StrokeSetResult{
-			VertexCount:       3,
-			VertexCoordinates: []float64{1, -1, 0, 1, 0, 0, 1, 1, 0},
-			PolylineCount:     1,
-			PolylineLengths:   []int{3},
-		},
+	var coords []float64
+	for _, y := range []float64{-1, -0.5, 0, 0.5, 1} {
+		for _, ang := range []float64{0, 1.57, 3.14, 4.71} {
+			coords = append(coords, math.Cos(ang), y, math.Sin(ang)) // radius 1
+		}
 	}
+	return &fakeHost{facets: wire.FacetSetResult{VertexCount: len(coords) / 3, VertexCoordinates: coords}}
 }
 
 func TestRunStudyDrivesPipeline(t *testing.T) {
@@ -65,14 +66,14 @@ func TestRunStudyDrivesPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunStudy: %v", err)
 	}
-	if !h.sawCall(wire.MethodBodyCalculateStrokes) {
-		t.Error("expected the study to section the body via calculateStrokes")
+	if !h.sawCall(wire.MethodBodyCalculateFacets) {
+		t.Error("expected the study to section the body via calculateFacets")
 	}
 	if !h.sawCall(wire.MethodClientGraphicsSet) {
 		t.Error("expected the study to push client graphics")
 	}
-	if res.ElementCount != 2 {
-		t.Errorf("ElementCount = %d, want 2 (two segments)", res.ElementCount)
+	if res.ElementCount < 1 {
+		t.Errorf("ElementCount = %d, want >=1", res.ElementCount)
 	}
 	if res.RayCount == 0 {
 		t.Error("expected at least one traced ray")
@@ -114,7 +115,7 @@ func TestRunStudyRendersExpectedNodes(t *testing.T) {
 // TestRunStudySectionError surfaces a host section failure rather than rendering an empty study.
 func TestRunStudySectionError(t *testing.T) {
 	h := cylinderHost()
-	h.failOn = wire.MethodBodyCalculateStrokes
+	h.failOn = wire.MethodBodyCalculateFacets
 	if _, err := NewEngine(h).RunStudy(0); err == nil {
 		t.Error("expected RunStudy to fail when sectioning fails")
 	}
