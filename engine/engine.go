@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// Package engine is the host-facing core of the Traceon electron-optics add-in: it
-// turns a host body into a radially-symmetric BEM study (section → solve → trace →
-// render) using only the Apache-2.0 oblikovati.org/api client and the pure-Go
-// numerics in ../core. The cgo c-shared shell (../export.go) owns the C ABI; this
-// package owns the study pipeline and stays cgo-free so it unit-tests on every
-// platform.
+// Package engine is the host-facing core of the Traceon electron-optics add-in: it turns a
+// host body into a radially-symmetric BEM study (section → solve → trace → render) using
+// only the Apache-2.0 oblikovati.org/api client and the pure-Go numerics in ../core. The
+// cgo c-shared shell (../export.go) owns the C ABI; this package owns the study pipeline and
+// stays cgo-free so it unit-tests on every platform.
 package engine
 
 import (
@@ -17,10 +16,20 @@ import (
 )
 
 // HostCaller is the transport the engine talks to the host through — exactly the
-// api/client Caller contract, supplied by the cgo shell at Activate (or a fake in
-// tests). Keeping it an interface here keeps this package cgo-free and testable.
+// api/client Caller contract, supplied by the cgo shell at Activate (or a fake in tests).
 type HostCaller interface {
 	Call(method string, req []byte) ([]byte, error)
+}
+
+// studyParams are the user-editable simulation parameters (set from the dockable panel).
+type studyParams struct {
+	voltage  float64 // potential applied to the electrode body (volts)
+	energyEV float64 // initial kinetic energy of the traced beam (eV)
+	numRays  int     // number of parallel rays launched
+}
+
+func defaultParams() studyParams {
+	return studyParams{voltage: 1000, energyEV: 1000, numRays: 7}
 }
 
 // Engine runs electron-optics studies against a live host.
@@ -28,13 +37,14 @@ type Engine struct {
 	host HostCaller
 	api  *client.Client
 
-	mu      sync.Mutex // guards running
-	running bool       // a study is in flight (coalesces overlapping command triggers)
+	mu      sync.Mutex // guards params + running
+	params  studyParams
+	running bool // a study is in flight (coalesces overlapping command triggers)
 }
 
-// NewEngine binds the engine to the host transport.
+// NewEngine binds the engine to the host transport with default simulation parameters.
 func NewEngine(host HostCaller) *Engine {
-	return &Engine{host: host, api: client.New(host)}
+	return &Engine{host: host, api: client.New(host), params: defaultParams()}
 }
 
 // RunStudyCommandID is the host command the add-in registers; firing it (a ribbon click or
@@ -54,18 +64,23 @@ func (e *Engine) RegisterCommands() error {
 	return err
 }
 
-// Setup performs the one-time host-facing initialization. It MUST NOT run on the host's session
-// goroutine (host calls there block until the frame loop drains the dispatcher, deadlocking the
-// head) — the cgo shell runs it on its own goroutine.
+// Setup performs the one-time host-facing initialization: register the study command and show
+// the simulation-parameters panel. It MUST NOT run on the host's session goroutine (host calls
+// there block until the frame loop drains the dispatcher, deadlocking the head) — the cgo shell
+// runs it on its own goroutine.
 func (e *Engine) Setup() error {
-	return e.RegisterCommands()
+	if err := e.RegisterCommands(); err != nil {
+		return err
+	}
+	_, err := e.ShowPanel()
+	return err
 }
 
 // Notify receives host event bytes. A command.started carrying RunStudyCommandID runs the study
 // on a SEPARATE goroutine — never inline, because Notify is invoked on the host's session
 // goroutine and a host call from there blocks until the frame loop drains the dispatcher (which
-// cannot happen while we're inside it), deadlocking every host call. A guard coalesces
-// overlapping triggers so one study is in flight at a time.
+// cannot happen while we're inside it), deadlocking every host call. A panel.valueChanged only
+// mutates engine state (no host call) so it is handled inline.
 func (e *Engine) Notify(ev []byte) {
 	var hdr struct {
 		Type string `json:"type"`
@@ -73,19 +88,28 @@ func (e *Engine) Notify(ev []byte) {
 	if json.Unmarshal(ev, &hdr) != nil {
 		return
 	}
-	if hdr.Type != wire.EventCommandStarted {
-		return
-	}
-	var c struct {
-		Command string `json:"command"`
-	}
-	if json.Unmarshal(ev, &c) == nil && c.Command == RunStudyCommandID {
-		e.launchStudy()
+	switch hdr.Type {
+	case wire.EventCommandStarted:
+		var c struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(ev, &c) == nil && c.Command == RunStudyCommandID {
+			e.launchStudy()
+		}
+	case wire.EventPanelValueChanged:
+		var p struct {
+			WindowId  string `json:"windowId"`
+			ControlId string `json:"controlId"`
+			Value     string `json:"value"`
+		}
+		if json.Unmarshal(ev, &p) == nil && p.WindowId == TraceonPanelID {
+			e.applyPanelEdit(p.ControlId, p.Value)
+		}
 	}
 }
 
-// launchStudy starts one study goroutine, coalescing overlapping triggers. The study pipeline
-// itself (section → solve → trace → render) is filled in over M2; M0 wires the command path.
+// launchStudy starts one study goroutine, coalescing overlapping triggers, and reports the
+// outcome to the host status bar so a failed study is visible rather than silently empty.
 func (e *Engine) launchStudy() {
 	e.mu.Lock()
 	if e.running {
@@ -101,13 +125,10 @@ func (e *Engine) launchStudy() {
 			e.running = false
 			e.mu.Unlock()
 		}()
-		_ = e.runStudy()
+		if _, err := e.RunStudy(0); err != nil {
+			_, _ = e.api.Status().SetText("Traceon study failed: " + err.Error())
+			return
+		}
+		_, _ = e.api.Status().SetText("Traceon study complete")
 	}()
-}
-
-// runStudy is the study pipeline entry point. M0 stub: reports readiness to the status bar so a
-// command trigger is observably handled. Replaced by the real section→solve→trace→render flow in M2.
-func (e *Engine) runStudy() error {
-	_, err := e.api.Status().SetText("Traceon: study pipeline not yet implemented")
-	return err
 }
