@@ -62,11 +62,14 @@ const (
 	attrVoltages = "voltages"
 )
 
-// electrode is one sectioned body: its (r, z) meridian (cm, for rendering) and the voltage
-// applied to it.
+// electrode is one electrode in a study: its (r, z) meridian (cm, for rendering + extent) and
+// the voltage applied to it. A host-sectioned electrode derives its BEM elements from the
+// profile; a parametric electrode (defined via core/geometry) carries pre-meshed line elements
+// (cm) in `lines`, which take precedence over the profile when assembling the BEM system.
 type electrode struct {
 	prof    *profile
 	voltage float64
+	lines   []radial.Line // pre-meshed parametric elements (cm); nil → derive from prof
 }
 
 // electronChargeOverMass is q/m for an electron (C/kg): -e / m_e.
@@ -87,12 +90,23 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	params := e.params
 	e.mu.Unlock()
 
-	electrodes, coils, magnets, irons, err := e.collectBodies(params)
-	if err != nil {
+	var (
+		electrodes []electrode
+		coils      []coil
+		magnets    []magnet
+		irons      []iron
+		err        error
+	)
+	if params.lens != lensHost {
+		electrodes, err = buildParametricLens(params)
+		if err != nil {
+			return nil, err
+		}
+	} else if electrodes, coils, magnets, irons, err = e.collectBodies(params); err != nil {
 		return nil, err
 	}
 	if len(electrodes)+len(coils)+len(magnets)+len(irons) == 0 {
-		return nil, fmt.Errorf("no solid bodies could be sectioned into electrodes, coils, magnets, or iron")
+		return nil, fmt.Errorf("no electrodes: select a parametric lens or open a part with solid bodies")
 	}
 
 	// Electrostatic charges from the electrode boundaries; magnetic current rings from the
@@ -266,19 +280,40 @@ func centralElectrode(profs []*profile) int {
 	return best
 }
 
-// assembleElements flattens every electrode's profile into one combined BEM element set
-// (lines in metres) so all electrodes are solved together in a single influence matrix.
+// assembleElements flattens every electrode into one combined BEM element set (lines in
+// metres) so all electrodes are solved together in a single influence matrix. A parametric
+// electrode supplies its own meshed elements (cm, scaled here to metres); a host-sectioned one
+// derives them from its profile. Both are biased at the electrode's fixed voltage.
 func assembleElements(electrodes []electrode) ([]radial.Line, []radial.ExcitationType, []float64) {
 	var lines []radial.Line
 	var types []radial.ExcitationType
 	var values []float64
 	for _, el := range electrodes {
-		l, t, v := el.prof.lineElements(el.voltage, cmToMetres)
-		lines = append(lines, l...)
-		types = append(types, t...)
-		values = append(values, v...)
+		var elLines []radial.Line
+		if len(el.lines) > 0 {
+			elLines = scaleLines(el.lines, cmToMetres)
+		} else {
+			elLines, _, _ = el.prof.lineElements(el.voltage, cmToMetres)
+		}
+		for _, line := range elLines {
+			lines = append(lines, line)
+			types = append(types, radial.VoltageFixed)
+			values = append(values, el.voltage)
+		}
 	}
 	return lines, types, values
+}
+
+// scaleLines returns the line4 elements with every vertex coordinate multiplied by scale (e.g.
+// cm→metres), so a parametric mesh defined in the host unit solves in SI metres.
+func scaleLines(lines []radial.Line, scale float64) []radial.Line {
+	out := make([]radial.Line, len(lines))
+	for i, l := range lines {
+		for k := 0; k < 4; k++ {
+			out[i][k] = geom2d.Vertex{l[k][0] * scale, l[k][1] * scale, l[k][2] * scale}
+		}
+	}
+	return out
 }
 
 // electrodeVoltages reads the per-electrode voltage map (body index → volts) from the active

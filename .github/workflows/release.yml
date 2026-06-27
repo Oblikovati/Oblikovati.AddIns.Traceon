@@ -1,0 +1,189 @@
+name: Release
+
+# The single add-in release pipeline. Hourly (and on demand) it tracks the latest
+# PUBLISHED oblikovati.org/api release and, when the bridge has not shipped for it yet:
+#   1. builds the c-shared add-in for every OS,
+#   2. publishes a GitHub release (tag `api-<version>`), and
+#   3. commits the bumped go.mod pin back to the default branch, so the repo always
+#      reflects the API release the bridge is built against.
+# It is idempotent: a run for an API release that already shipped is a no-op.
+on:
+  schedule:
+    - cron: "0 * * * *" # top of every hour
+  workflow_dispatch:
+    inputs:
+      api_ref:
+        description: "API release to build against (tag/sha; default: the latest published release)"
+        required: false
+        default: ""
+
+# Least privilege: permissions are granted per job (none at the workflow level), so only
+# the publish/sync jobs can write.
+
+# One release at a time (the sync job pushes to the default branch).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Resolve the API release to track and decide whether the bridge needs building.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      api_tag: ${{ steps.decide.outputs.api_tag }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ github.event.inputs.api_ref }}
+        run: |
+          set -euo pipefail
+          api_tag="$OVERRIDE"
+          if [ -z "$api_tag" ]; then
+            api_tag=$(gh release view -R Oblikovati/Oblikovati.API --json tagName -q .tagName)
+          fi
+          if [ -z "$api_tag" ]; then
+            echo "no oblikovati.org/api release found" >&2
+            exit 1
+          fi
+          tag="api-$api_tag" # the bridge release is named for the API release it tracks
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "bridge already shipped for API $api_tag ($tag) — nothing to do."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "API released $api_tag — building bridge $tag."
+          fi
+          echo "api_tag=$api_tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Build the c-shared add-in per OS against that API release.
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runner per platform so the host gets a binary for its OS+arch (#1164).
+        # darwin-amd64 is cross-built on the macos-14 (arm64) runner, so no Intel runner (#1164).
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "1"
+      ADDINS_PUBLISH_TOKEN: ${{ secrets.ADDINS_PUBLISH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+        with:
+          api-ref: ${{ needs.check.outputs.api_tag }}
+      - name: Build and publish per-platform bundles
+        # macOS builds BOTH arches — darwin-amd64 is cross-compiled on the arm64 runner (the
+        # macOS toolchain is universal), so Intel Macs are covered without the slow Intel
+        # runner. Each bundle publishes when ADDINS_PUBLISH_TOKEN is set; api major.minor from
+        # the tracked API release (api-vX.Y.Z -> X.Y).
+        shell: bash
+        env:
+          ADDINS_PUBLISH_URL: ${{ secrets.ADDINS_PUBLISH_URL }}
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) ext=dll;   targets="windows-amd64" ;;
+            macOS)   ext=dylib; targets="darwin-arm64 darwin-amd64" ;;
+            *)
+              ext=so; a=$(uname -m)
+              case "$a" in x86_64|amd64) a=amd64 ;; aarch64|arm64) a=arm64 ;; esac
+              targets="linux-$a" ;;
+          esac
+          api="${API_TAG#v}"; api="${api%.*}"
+          mkdir -p dist
+          for plat in $targets; do
+            lib="dist/oblikovati-traceon-$plat.$ext"
+            GOARCH="${plat##*-}" go build -buildmode=c-shared -o "$lib" .
+            if [ -n "${ADDINS_PUBLISH_TOKEN:-}" ]; then
+              scripts/publish-catalogue.sh "$plat" "$lib" "$api"
+            fi
+          done
+          cp manifest.json dist/manifest.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: traceon-${{ matrix.os }}
+          path: dist/*
+
+  # Cut the bridge GitHub release for this API version.
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            -R "$GITHUB_REPOSITORY" \
+            --title "Traceon — API $API_TAG" \
+            --notes "Auto-built oblikovati-traceon against oblikovati.org/api $API_TAG. Artifacts: c-shared library per OS + manifest.json."
+
+  # Commit the bumped pin back, so the repo matches what shipped.
+  sync:
+    needs: [check, build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+        with:
+          api-ref: ${{ needs.check.outputs.api_tag }}
+      - name: Pin go.mod to the API release
+        env:
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          set -euo pipefail
+          go mod edit -require "oblikovati.org/api@$API_TAG"
+          go mod tidy
+          # The replaces are CI-only; never commit them.
+          go mod edit -dropreplace oblikovati.org/api -dropreplace oblikovati.org
+      - name: Commit if changed
+        env:
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- go.mod go.sum; then
+            echo "repo already tracks API $API_TAG — nothing to commit."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # go.sum is absent when the add-in has no transitive deps beyond the API.
+          git add go.mod
+          [ -f go.sum ] && git add go.sum || true
+          git commit -m "chore: add-in tracks oblikovati.org/api $API_TAG [skip ci]"
+          git push origin "HEAD:$BRANCH"
