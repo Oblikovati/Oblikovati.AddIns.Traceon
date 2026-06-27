@@ -11,55 +11,85 @@ import (
 	"oblikovati.org/traceon/core/radial"
 )
 
-// sectionTolerance is the chord tolerance (cm, the host DB unit) for the boundary
-// tessellation — fine enough that polyline edges track curved profiles.
-const sectionTolerance = 0.05
+// sectionTolerance is the chord tolerance (cm, the host DB unit) for the surface
+// tessellation the meridian is extracted from.
+const sectionTolerance = 0.1
 
-// profile is the axisymmetric electrode cross-section extracted from a host body: the (r, z)
-// boundary points of every polyline loop, mapped from the section plane (x→r, the in-plane
-// vertical→z). A single body becomes one set of charged BEM elements.
+// meridianBins is the number of axial bands used to extract the outer (r, z) profile.
+const meridianBins = 60
+
+// profile is the axisymmetric electrode meridian extracted from a host body: the outer
+// (r, z) boundary of its revolved surface. A single body becomes one charged BEM electrode.
 type profile struct {
-	loops [][]geom2d.Point2 // each polyline as (r, z) points
+	loops [][]geom2d.Point2 // the meridian as one ordered (r, z) polyline (in loops[0])
 }
 
-// extractProfile pulls the body's boundary polylines over api/client and maps them into the
-// (r, z) half-plane the radial BEM works in. The section is the body's silhouette in the
-// xz-plane: the host returns the strokes' x and the in-plane vertical, which become r and z.
+// extractProfile derives the axisymmetric (r, z) meridian of a host body from its surface
+// facets: every facet vertex is mapped to (r = √(x²+z²), z = y) — its distance from the
+// optical (Y) axis and its axial position — and the OUTER boundary r(z) is taken per axial
+// band. This recovers the electrode's silhouette for any body of revolution (a body's edge
+// strokes are only its rims, which collapse to points, so the facet envelope is used instead).
 func (e *Engine) extractProfile(bodyIndex int) (*profile, error) {
-	strokes, err := e.api.Body().CalculateStrokes(bodyIndex, sectionTolerance)
+	facets, err := e.api.Body().CalculateFacets(wire.CalculateFacetsArgs{BodyIndex: bodyIndex, Tolerance: sectionTolerance})
 	if err != nil {
-		return nil, fmt.Errorf("calculate strokes: %w", err)
+		return nil, fmt.Errorf("calculate facets: %w", err)
 	}
-	loops := loopsFromStrokes(strokes)
-	if len(loops) == 0 {
-		return nil, fmt.Errorf("body %d has no boundary polylines to section", bodyIndex)
+	if facets.VertexCount == 0 {
+		return nil, fmt.Errorf("body %d has no surface facets to section", bodyIndex)
 	}
-	return &profile{loops: loops}, nil
+	loop := outerMeridian(facets.VertexCoordinates)
+	if len(loop) < 2 {
+		return nil, fmt.Errorf("body %d produced a degenerate (r,z) profile", bodyIndex)
+	}
+	return &profile{loops: [][]geom2d.Point2{loop}}, nil
 }
 
-// loopsFromStrokes unflattens StrokeSetResult (flat XYZ coords + per-polyline lengths) into
-// (r, z) loops: r = |x| (the radial distance), z = the in-plane height (the stroke's y).
-func loopsFromStrokes(s wire.StrokeSetResult) [][]geom2d.Point2 {
-	loops := make([][]geom2d.Point2, 0, s.PolylineCount)
-	at := 0
-	for _, n := range s.PolylineLengths {
-		loop := make([]geom2d.Point2, 0, n)
-		for i := 0; i < n; i++ {
-			base := (at + i) * 3
-			r := math.Abs(s.VertexCoordinates[base])
-			z := s.VertexCoordinates[base+1]
-			loop = append(loop, geom2d.Point2{r, z})
-		}
-		loops = append(loops, loop)
-		at += n
+// outerMeridian maps flat xyz vertices to (r = √(x²+z²), z = y) and returns the outer
+// boundary r(z): the largest radius seen in each of meridianBins axial bands, as an ordered
+// (r, z) polyline. Empty bands are skipped. This is the revolved surface's silhouette.
+func outerMeridian(xyz []float64) []geom2d.Point2 {
+	n := len(xyz) / 3
+	if n == 0 {
+		return nil
 	}
-	return loops
+	zMin, zMax := math.Inf(1), math.Inf(-1)
+	for i := 0; i < n; i++ {
+		y := xyz[i*3+1]
+		zMin, zMax = math.Min(zMin, y), math.Max(zMax, y)
+	}
+	if zMax <= zMin {
+		return nil
+	}
+	maxR := make([]float64, meridianBins)
+	seen := make([]bool, meridianBins)
+	for i := 0; i < n; i++ {
+		x, y, z := xyz[i*3], xyz[i*3+1], xyz[i*3+2]
+		r := math.Hypot(x, z)
+		b := int((y - zMin) / (zMax - zMin) * float64(meridianBins-1))
+		if b < 0 {
+			b = 0
+		}
+		if b >= meridianBins {
+			b = meridianBins - 1
+		}
+		if !seen[b] || r > maxR[b] {
+			maxR[b], seen[b] = r, true
+		}
+	}
+	loop := make([]geom2d.Point2, 0, meridianBins)
+	for b := 0; b < meridianBins; b++ {
+		if !seen[b] {
+			continue
+		}
+		z := zMin + (zMax-zMin)*float64(b)/float64(meridianBins-1)
+		loop = append(loop, geom2d.Point2{maxR[b], z})
+	}
+	return loop
 }
 
 // lineElements builds the radial BEM line elements (GMSH line4 cubics) from the profile: each
-// consecutive (r, z) point pair becomes a straight cubic element whose control points are
-// collinear (start, end, 1/3, 2/3). Returns the elements and a uniform excitation (every
-// element a fixed-voltage electrode at the given voltage).
+// consecutive (r, z) point pair becomes a straight cubic element. Returns the elements and a
+// uniform excitation (every element a fixed-voltage electrode at the given voltage).
 func (p *profile) lineElements(voltage float64) ([]radial.Line, []radial.ExcitationType, []float64) {
 	var lines []radial.Line
 	for _, loop := range p.loops {
