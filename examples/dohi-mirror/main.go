@@ -65,26 +65,26 @@ func main() {
 	fmt.Printf("dohi mirror: %d elements, %d reflected rays → images/dohi-mirror.png\n", len(lines), len(rays))
 }
 
-// traceMirror launches electrons at z=15 that reflect off the mirror near z=0 and return; the
-// trajectories are clipped to the field region for a legible figure.
+// traceMirror launches electrons down the axis from z=2.4 at a spread of radii; each
+// decelerates in the mirror's retarding field, reverses near z≈0, and returns — so the figure
+// shows the reflection as a fan of in-and-out paths (mirrored about the axis). Plotting r (not
+// |r|) keeps the incoming and reflected legs of each ray distinct.
 func traceMirror(fa field.FieldRadialAxial) [][2][]float64 {
 	fieldFn := func(pos, _ geom3d.Vec3) (elec, mag geom3d.Vec3) {
 		e := fa.FieldAtPoint(geom2d.Vertex{pos[0], pos[1], pos[2]})
 		return geom3d.Vec3{e[0], e[1], e[2]}, geom3d.Vec3{}
 	}
+	v0 := tracing.VelocityVec(1000, geom3d.Vec3{0, 0, -1}, constants.ElectronMass) // straight in (−z)
 	qOverM := -constants.ElementaryCharge / constants.ElectronMass
-	bounds := tracing.Bounds{{-0.1, 0.1}, {-0.03, 0.03}, {0.05, 19}}
+	bounds := tracing.Bounds{{-0.08, 0.08}, {-0.03, 0.03}, {0.04, 3.0}}
 
 	var rays [][2][]float64
 	for i := 0; i < numRays; i++ {
-		angle := (float64(i)/float64(numRays-1) - 0.5) * 2e-3 // small spread of launch angles
-		v0 := tracing.VelocityVecXZPlane(1000, math.Abs(angle), angle >= 0, constants.ElectronMass)
-		_, states := tracing.TraceParticle(geom3d.Vec3{0, 0, 15}, v0, qOverM, fieldFn, bounds, 1e-8)
-		var zs, rs []float64
+		r0 := 0.01 + 0.05*float64(i)/float64(numRays-1) // distinct launch radii 0.01..0.06
+		_, states := tracing.TraceParticle(geom3d.Vec3{r0, 0, 2.4}, v0, qOverM, fieldFn, bounds, 1e-9)
+		zs := make([]float64, 0, len(states))
+		rs := make([]float64, 0, len(states))
 		for _, s := range states {
-			if s[2] > 2.0 { // show only the near-mirror region where the reflection happens
-				continue
-			}
 			zs = append(zs, s[2])
 			rs = append(rs, s[0])
 		}
@@ -97,7 +97,7 @@ func traceMirror(fa field.FieldRadialAxial) [][2][]float64 {
 
 func render(paths []geometry.Path, bem field.FieldRadialBEM, rays [][2][]float64) {
 	const grid = 220
-	zMin, zMax, rMax := -0.3, 2.0, 0.9
+	zMin, zMax, rMax := -0.2, 2.6, 0.9
 	c := plot.New(700, 600, zMin, zMax, -rMax, rMax)
 
 	pot := make([][]float64, grid)
