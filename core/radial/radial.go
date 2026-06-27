@@ -46,6 +46,21 @@ func reorder(line Line) (v1, v2, v3, v4 geom2d.Vertex) {
 	return line[0], line[2], line[3], line[1]
 }
 
+// ElementCenter returns the (r, z) point at the element's parametric midpoint (α=0), used
+// as the collocation point for matrix rows and the field-sampling point for the
+// magnetostatic right-hand side. Mirrors get_center_of_element (higher-order radial).
+func ElementCenter(line Line) geom2d.Point2 {
+	v1, v2, v3, v4 := reorder(line)
+	_, pos := geom2d.PositionAndJacobianRadial(0, v1, v2, v3, v4)
+	return pos
+}
+
+// ElementNormal returns the unit (r, z) normal at the element's parametric midpoint (α=0).
+func ElementNormal(line Line) geom2d.Point2 {
+	v1, v2, v3, v4 := reorder(line)
+	return geom2d.HigherOrderNormalRadial(0, v1, v2, v3, v4)
+}
+
 // FillJacobianBufferRadial precomputes, for every line element, the quadrature Jacobians
 // (weight*dl) and (r, z) positions at the NQuad2D Gauss points. Port of
 // fill_jacobian_buffer_radial.

@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"oblikovati.org/traceon/core/geom2d"
+	"oblikovati.org/traceon/core/geom3d"
 	"oblikovati.org/traceon/core/interp"
 	"oblikovati.org/traceon/core/radial"
 	"oblikovati.org/traceon/core/solver"
@@ -20,26 +21,50 @@ import (
 
 // FieldRadialBEM evaluates the field directly from the effective point charges by
 // integrating over every element — accurate everywhere, slower per evaluation. Port of
-// FieldRadialBEM (electrostatic path).
+// FieldRadialBEM. Carries the electrostatic, magnetostatic, and current charge sets; any
+// may be empty.
 type FieldRadialBEM struct {
-	charges solver.EffectivePointCharges
+	elec    solver.EffectivePointCharges
+	mag     solver.EffectivePointCharges
+	current solver.CurrentCharges
 }
 
 // NewFieldRadialBEM wraps a solved electrostatic charge distribution for direct evaluation.
 func NewFieldRadialBEM(epc solver.EffectivePointCharges) FieldRadialBEM {
-	return FieldRadialBEM{charges: epc}
+	return FieldRadialBEM{elec: epc}
+}
+
+// NewFieldRadialBEMFull wraps electrostatic, magnetostatic, and current charge sets.
+func NewFieldRadialBEMFull(elec, mag solver.EffectivePointCharges, current solver.CurrentCharges) FieldRadialBEM {
+	return FieldRadialBEM{elec: elec, mag: mag, current: current}
 }
 
 // PotentialAtPoint returns the electrostatic potential at point. Port of
 // electrostatic_potential_at_local_point (= backend.potential_radial).
 func (f FieldRadialBEM) PotentialAtPoint(point geom2d.Vertex) float64 {
-	return radial.PotentialRadial(point, f.charges.Charges, f.charges.Jac, f.charges.Pos)
+	return radial.PotentialRadial(point, f.elec.Charges, f.elec.Jac, f.elec.Pos)
 }
 
 // FieldAtPoint returns the electric field (Ex, Ey, Ez) at point. Port of
 // electrostatic_field_at_local_point (= backend.field_radial).
 func (f FieldRadialBEM) FieldAtPoint(point geom2d.Vertex) geom2d.Vertex {
-	return radial.FieldRadial(point, f.charges.Charges, f.charges.Jac, f.charges.Pos)
+	return radial.FieldRadial(point, f.elec.Charges, f.elec.Jac, f.elec.Pos)
+}
+
+// CurrentFieldAtPoint returns the magnetic field (Hx, Hy, Hz) at point from the current
+// rings alone. Port of current_field_at_local_point.
+func (f FieldRadialBEM) CurrentFieldAtPoint(point geom2d.Vertex) geom2d.Vertex {
+	h := radial.CurrentFieldRadial(geom3d.Vec3{point[0], point[1], point[2]}, f.current.Currents, f.current.Jac, f.current.Pos)
+	return geom2d.Vertex{h[0], h[1], h[2]}
+}
+
+// MagnetostaticFieldAtPoint returns the total magnetic field (Hx, Hy, Hz): the current
+// field plus the field of the magnetostatic surface charges. Port of
+// magnetostatic_field_at_local_point (= current_field + field_radial(mag charges)).
+func (f FieldRadialBEM) MagnetostaticFieldAtPoint(point geom2d.Vertex) geom2d.Vertex {
+	cur := f.CurrentFieldAtPoint(point)
+	mag := radial.FieldRadial(point, f.mag.Charges, f.mag.Jac, f.mag.Pos)
+	return geom2d.Vertex{cur[0] + mag[0], cur[1] + mag[1], cur[2] + mag[2]}
 }
 
 // FieldRadialAxial evaluates the field via the axial-series interpolation: it samples the

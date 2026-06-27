@@ -37,6 +37,25 @@ func TestTriangleArea(t *testing.T) {
 	oracle.CheckClose(t, "area", TriangleArea(Vec3{0, 0, 0}, Vec3{2, 0, 0}, Vec3{0, 3, 0}), 3.0)
 }
 
+// TestFillJacobianBuffer3D checks the triangle quadrature buffer: the Jacobians (2·w·area)
+// sum to the triangle area (since the reference-triangle weights sum to 1/2), and each
+// quadrature position is the correct barycentric combination of the vertices.
+func TestFillJacobianBuffer3D(t *testing.T) {
+	tri := Triangle{{1, 0, 0}, {1.5, 0, 0}, {1.25, 0, 0.5}}
+	jac, pos := FillJacobianBuffer3D([]Triangle{tri})
+	area := TriangleArea(tri[0], tri[1], tri[2])
+	sum := 0.0
+	for k := 0; k < N_TRIANGLE_QUAD; k++ {
+		sum += jac[0][k]
+		// Position must equal v0 + b1·(v1-v0) + b2·(v2-v0).
+		for c := 0; c < 3; c++ {
+			want := tri[0][c] + QuadB1[k]*(tri[1][c]-tri[0][c]) + QuadB2[k]*(tri[2][c]-tri[0][c])
+			oracle.CheckClose(t, "quad pos", pos[0][k][c], want)
+		}
+	}
+	oracle.CheckClose(t, "sum(jac)=area", sum, area)
+}
+
 // TestOrientation checks the triangle-orientation test on a shared-edge pair: two
 // triangles wound the same way agree; flipping one disagrees; a disjoint pair has no edge.
 func TestOrientation(t *testing.T) {

@@ -98,6 +98,35 @@ func Normal3D(t Triangle) Vec3 {
 	return Vec3{nx / l, ny / l, nz / l}
 }
 
+// CurrentJacobianBuffer holds the triangle quadrature Jacobians (2·w·area) at the
+// N_TRIANGLE_QUAD points; CurrentPositionBuffer the corresponding 3D positions. Indexed
+// [triangleIndex][quadIndex]. Used to treat axisymmetric coil-cross-section triangles as
+// current rings.
+type (
+	CurrentJacobianBuffer [][N_TRIANGLE_QUAD]float64
+	CurrentPositionBuffer [][N_TRIANGLE_QUAD]Vec3
+)
+
+// FillJacobianBuffer3D precomputes, for every triangle, the quadrature Jacobian (2·w·area)
+// and barycentric position at the N_TRIANGLE_QUAD points. Port of fill_jacobian_buffer_3d.
+func FillJacobianBuffer3D(triangles []Triangle) (CurrentJacobianBuffer, CurrentPositionBuffer) {
+	jac := make(CurrentJacobianBuffer, len(triangles))
+	pos := make(CurrentPositionBuffer, len(triangles))
+	for i, t := range triangles {
+		area := TriangleArea(t[0], t[1], t[2])
+		for k := 0; k < N_TRIANGLE_QUAD; k++ {
+			b1, b2 := QuadB1[k], QuadB2[k]
+			jac[i][k] = 2 * QuadWeights[k] * area
+			pos[i][k] = Vec3{
+				t[0][0] + b1*(t[1][0]-t[0][0]) + b2*(t[2][0]-t[0][0]),
+				t[0][1] + b1*(t[1][1]-t[0][1]) + b2*(t[2][1]-t[0][1]),
+				t[0][2] + b1*(t[1][2]-t[0][2]) + b2*(t[2][2]-t[0][2]),
+			}
+		}
+	}
+	return jac, pos
+}
+
 // PositionAndJacobian3D returns (jac, pos) for the flat-triangle parametrization at
 // barycentric (alpha, beta): pos = t0 + alpha*(t1-t0) + beta*(t2-t0); jac = 2*area.
 // Port of position_and_jacobian_3d (returns (jac, pos) to match the Python tuple order).

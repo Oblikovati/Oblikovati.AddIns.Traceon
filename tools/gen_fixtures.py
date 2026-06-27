@@ -429,6 +429,160 @@ def _tracing() -> dict:
     }
 
 
+@fixture("radial", "currents")
+def _currents() -> dict:
+    """Magnetostatic current-ring machinery: the triangle jacobian buffer and the current
+    ring field/potential/axial-derivatives, verified against the C and Biot-Savart."""
+    import numpy as np
+    import traceon.backend as B
+
+    nq = B.N_TRIANGLE_QUAD
+
+    # Triangle jacobian buffer on a couple of triangles.
+    tris = np.array([
+        [[1.0, 0.0, 0.0], [1.5, 0.0, 0.0], [1.25, 0.0, 0.5]],
+        [[2.0, 0.0, -0.3], [2.4, 0.0, 0.1], [2.1, 0.0, 0.4]],
+    ])
+    jac3d, pos3d = B.fill_jacobian_buffer_3d(tris)
+
+    # Ideal single current ring at radius r (get_ring_effective_point_charges).
+    def ring_eff(current, r):
+        charges = np.array([float(current)])
+        jacobians = np.array([[1.0] + [0.0] * (nq - 1)])
+        positions = np.array([[[r, 0.0, 0.0]] * nq])
+        return charges, jacobians, positions
+
+    current, r = 2.5, 1.0
+    rc, rj, rp = ring_eff(current, r)
+
+    field_points = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.3], [0.2, 0.0, -0.7], [1.2, 0.0, 0.1]])
+    cur_field = [[float(c) for c in B.current_field_radial(p, rc, rj, rp)] for p in field_points]
+
+    z_axis = np.linspace(-2.0, 2.0, 10)
+    cur_potential = [float(B.current_potential_axial(z_, rc, rj, rp)) for z_ in z_axis]
+    cur_axial_derivs = B.current_axial_derivatives_radial(z_axis, rc, rj, rp).tolist()
+
+    return {
+        "tris": tris.tolist(),
+        "jac3d": jac3d.tolist(),
+        "pos3d": pos3d.tolist(),
+        "current": current,
+        "r": r,
+        "field_points": field_points.tolist(),
+        "cur_field": cur_field,
+        "z_axis": z_axis.tolist(),
+        "cur_potential": cur_potential,
+        "cur_axial_derivs": cur_axial_derivs,
+    }
+
+
+@fixture("field", "magnetic_field")
+def _magnetic_field() -> dict:
+    """FieldRadialBEM magnetic evaluation: the current field and the total magnetostatic
+    field (current + magnetostatic surface charges) at sample points."""
+    import numpy as np
+    import traceon.backend as B
+    import traceon.field as F
+
+    nq = B.N_TRIANGLE_QUAD
+
+    def line4(r0, z0, r1, z1):
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    # Magnetostatic surface charges on a couple of lines (arbitrary nonzero values).
+    mag_lines = np.array([line4(0.6, -0.3, 0.6, 0.3), line4(0.9, -0.3, 0.9, 0.3)])
+    mag_jac, mag_pos = B.fill_jacobian_buffer_radial(mag_lines)
+    mag_charges = np.array([0.4, -0.25])
+
+    # Current ring.
+    current, r_ring = 3.0, 1.0
+    cur_c = np.array([current])
+    cur_j = np.array([[1.0] + [0.0] * (nq - 1)])
+    cur_p = np.array([[[r_ring, 0.0, 0.0]] * nq])
+
+    field = F.FieldRadialBEM(
+        magnetostatic_point_charges=F.EffectivePointCharges(mag_charges, mag_jac, mag_pos),
+        current_point_charges=F.EffectivePointCharges(cur_c, cur_j, cur_p))
+
+    points = np.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.2], [0.5, 0.0, -0.4], [1.1, 0.0, 0.1]])
+    cur_field = [[float(c) for c in field.current_field_at_point(p)] for p in points]
+    mag_field = [[float(c) for c in field.magnetostatic_field_at_point(p)] for p in points]
+
+    return {
+        "mag_lines": mag_lines.tolist(),
+        "mag_charges": mag_charges.tolist(),
+        "current": current,
+        "r_ring": r_ring,
+        "points": points.tolist(),
+        "cur_field": cur_field,
+        "mag_field": mag_field,
+    }
+
+
+@fixture("solver", "magnetostatic")
+def _magnetostatic() -> dict:
+    """Magnetostatic radial solve: a magnetizable element + a magnetic-scalar-potential
+    element responding to a current ring's pre-existing field. Reproduces
+    MagnetostaticSolverRadial's matrix + right-hand side manually (no mesher)."""
+    import numpy as np
+    import traceon.backend as B
+
+    nq = B.N_TRIANGLE_QUAD
+
+    def line4(r0, z0, r1, z1):
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    lines = np.array([line4(0.5, -0.2, 0.5, 0.2), line4(0.8, -0.2, 0.8, 0.2)])
+    n = len(lines)
+    types = np.array([6, 5], dtype=np.uint8)  # MAGNETIZABLE, MAGNETOSTATIC_POT
+    values = np.array([500.0, 1.0])           # relative permeability, scalar potential
+
+    # Current ring pre-field source.
+    current, r_ring = 3.0, 1.0
+    rc = np.array([current])
+    rj = np.array([[1.0] + [0.0] * (nq - 1)])
+    rp = np.array([[[r_ring, 0.0, 0.0]] * nq])
+
+    jac, pos = B.fill_jacobian_buffer_radial(lines)
+    matrix = np.zeros((n, n))
+    B.fill_matrix_radial(matrix, lines, types, values, jac, pos, 0, n - 1)
+    for i in range(n):
+        if types[i] == 6:  # MAGNETIZABLE
+            matrix[i, i] = B.self_field_dot_normal_radial(lines[i], values[i]) - 1
+        else:
+            matrix[i, i] = B.self_potential_radial(lines[i])
+
+    # Right-hand side: scalar potential on MAGNETOSTATIC_POT; for MAGNETIZABLE, the negated
+    # flux of the pre-existing (current) field through the element normal at its centre.
+    rhs = np.zeros(n)
+    for i in range(n):
+        if types[i] == 5:
+            rhs[i] = values[i]
+        else:
+            _, center = B.position_and_jacobian_radial(0.0, lines[i][0], lines[i][2], lines[i][3], lines[i][1])
+            h = B.current_field_radial(np.array([center[0], 0.0, center[1]]), rc, rj, rp)
+            normal = B.higher_order_normal_radial(0.0, lines[i])
+            dot = h[0] * normal[0] + h[2] * normal[1]
+            rhs[i] = -B.flux_density_to_charge_factor(values[i]) * dot
+
+    charges = np.linalg.solve(matrix, rhs)
+
+    return {
+        "lines": lines.tolist(),
+        "types": types.tolist(),
+        "values": values.tolist(),
+        "current": current,
+        "r_ring": r_ring,
+        "matrix": matrix.tolist(),
+        "rhs": rhs.tolist(),
+        "charges": charges.tolist(),
+    }
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
