@@ -646,8 +646,8 @@ def _surface_mesh() -> dict:
     import numpy as np
     from traceon.geometry import Surface
 
-    def mesh_case(surface, mesh_size):
-        m = surface.mesh(mesh_size=mesh_size)
+    def mesh_case(surface, mesh_size, mesh_size_factor=None):
+        m = surface.mesh(mesh_size=mesh_size, mesh_size_factor=mesh_size_factor)
         return {
             "points": m.points.tolist(),
             "triangles": m.triangles.astype(int).tolist(),
@@ -664,6 +664,9 @@ def _surface_mesh() -> dict:
         {"name": "disk_origin", **mesh_case(Surface.disk_xz(0.0, 0.0, 1.0), 0.5)},
         # Multi-section plate (covers section welding).
         {"name": "plate_sections", **mesh_case(plate, 0.5)},
+        # Rectangular coil cross-section (extruded line), by factor and by explicit size.
+        {"name": "rect_factor", **mesh_case(Surface.rectangle_xz(2., 3., 2., 3.), None, 16)},
+        {"name": "rect_size", **mesh_case(Surface.rectangle_xz(2., 3., 2., 3.), 0.1)},
     ]
     return {"cases": cases}
 

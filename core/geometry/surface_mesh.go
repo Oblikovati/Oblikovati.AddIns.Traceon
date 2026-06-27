@@ -20,6 +20,17 @@ func (s Surface) Mesh(meshSize float64) *mesh.TriangleMesh {
 	return meshSurfaces([]Surface{s}, meshSize)
 }
 
+// MeshByFactor meshes the surface at an element size derived from the mesh-size factor:
+// min(PathLength1, PathLength2)/4 / √factor — the dimension-relative sizing upstream uses when
+// only mesh_size_factor is given. Mirrors Surface.mesh's mesh_size_factor branch.
+func (s Surface) MeshByFactor(factor float64) *mesh.TriangleMesh {
+	meshSize := math.Min(s.PathLength1, s.PathLength2) / 4
+	if factor > 0 {
+		meshSize /= math.Sqrt(factor)
+	}
+	return s.Mesh(meshSize)
+}
+
 // MeshSurfaceGroup meshes several named surfaces into one triangle mesh, each surface its own
 // physical group. Coincident points across surfaces are merged by the dedup. Mirrors meshing a
 // surface collection: (a + b).mesh(...).
