@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# The oblikovati-traceon add-in (module oblikovati.org/traceon). The SHIPPED c-shared
+# library links only the Apache-2.0 contract (oblikovati.org/api, pinned in go.mod to the
+# latest published release) plus pure-Go numerics (gonum). The api sibling is wired by the
+# local .github/actions/siblings composite (ADR-0018); the GPL host is never linked.
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1.0
+
+  # SPDX: every Go file in this MPL-2.0 repo must carry an MPL-2.0 identifier.
+  spdx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check SPDX headers
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r f; do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier: MPL-2.0'; then
+              echo "missing MPL-2.0 SPDX header: $f"
+              missing=1
+            fi
+          done < <(find . -name '*.go' -not -path './_api/*')
+          exit $missing
+
+  # Pure-Go unit tests (numerical core + engine) on every OS. CGO is off: the core is
+  # pure Go and the engine reaches the host only over the C ABI (not exercised in tests).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - run: go install gotest.tools/gotestsum@v1.12.0
+      - name: Test
+        run: gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./core/... ./engine/...
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results-${{ matrix.os }}.xml
+
+  # Race detector needs cgo; Linux only. Runs the pure-Go core (the root c-shared package
+  # has no tests).
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - run: go test -race ./core/... ./engine/...
+
+  # Build the SHIPPED add-in: the cgo c-shared library (.so/.dll/.dylib) on every OS.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - name: Build c-shared library
+        run: |
+          EXT=so
+          [ "$RUNNER_OS" = "Windows" ] && EXT=dll
+          [ "$RUNNER_OS" = "macOS" ] && EXT=dylib
+          echo "building oblikovati-traceon.$EXT"
+          mkdir -p build
+          go build -buildmode=c-shared -o "build/oblikovati-traceon.$EXT" .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: oblikovati-traceon-${{ matrix.os }}
+          path: build/oblikovati-traceon.*

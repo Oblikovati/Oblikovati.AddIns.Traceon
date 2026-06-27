@@ -1,0 +1,18 @@
+{
+  "id": "com.oblikovati.traceon",
+  "displayName": "Oblikovati Traceon",
+  "version": "0.1.0",
+  "description": "Electron-optics simulation: a radially-symmetric Boundary Element Method (BEM) electrostatic/magnetostatic field solver and charged-particle tracer. Sections a body into an axisymmetric profile, solves the surface charge distribution, traces rays, and renders fields and trajectories back into the viewport as client graphics. Pure-Go port of the Traceon library.",
+  "license": "MPL-2.0",
+  "sourceRepo": "https://github.com/Oblikovati/Oblikovati.AddIns.Traceon",
+  "apiCompat": "0.91",
+  "capabilities": [
+    "commands",
+    "documents",
+    "model",
+    "body",
+    "materials",
+    "clientGraphics",
+    "interactionGraphics"
+  ]
+}
