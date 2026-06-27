@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Oblikovati Traceon">
+  <rect width="64" height="64" rx="12" fill="#1f2430"/>
+  <!-- einzel-lens electrodes (three apertures on the optical axis) -->
+  <g stroke="#c8cdd8" stroke-width="3" stroke-linecap="round">
+    <path d="M14 22 H24 M40 22 H50"/>
+    <path d="M14 32 H22 M42 32 H50"/>
+    <path d="M14 42 H24 M40 42 H50"/>
+  </g>
+  <!-- electron rays converging to a focus on the axis -->
+  <g fill="none" stroke="#3ddc97" stroke-width="2">
+    <path d="M14 27 C 30 27, 44 30, 56 32"/>
+    <path d="M14 37 C 30 37, 44 34, 56 32"/>
+  </g>
+  <!-- optical axis + focus -->
+  <line x1="8" y1="32" x2="58" y2="32" stroke="#3b82f6" stroke-width="1" opacity="0.6"/>
+  <circle cx="56" cy="32" r="2.5" fill="#e5484d"/>
+</svg>
