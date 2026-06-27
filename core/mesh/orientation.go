@@ -13,21 +13,32 @@ func New(points []geom2d.Vertex, lines [][]int, physicalToLines map[string][]int
 	m := &Mesh{Points: p, Lines: l, PhysicalToLines: physicalToLines}
 	if ensureOutward {
 		for _, idxs := range physicalToLines {
-			m.ensureLineOrientation(idxs)
+			m.ensureLineOrientation(idxs, true)
 		}
 	}
 	return m
 }
 
+// EnsureInwardNormals makes the named electrode's line normals consistent and inward-pointing
+// — the convention an electrostatic/magnetostatic boundary (a zero-constant dielectric/
+// magnetizable element) uses. A no-op if the electrode is absent. Mirrors
+// mesher.Mesh.ensure_inward_normals for the radial (line-only) case.
+func (m *Mesh) EnsureInwardNormals(electrode string) {
+	if idxs, ok := m.PhysicalToLines[electrode]; ok {
+		m.ensureLineOrientation(idxs, false)
+	}
+}
+
 // ensureLineOrientation makes the given electrode's lines consistently oriented and then
-// flips the whole group if its normals point inward, so they end up outward. Mirrors
-// mesher._ensure_line_orientation with should_be_outwards=True.
-func (m *Mesh) ensureLineOrientation(group []int) {
+// flips the whole group when its winding does not match the wanted direction, so the normals
+// end up outward (outward=true) or inward (outward=false). Mirrors
+// mesher._ensure_line_orientation with should_be_outwards = outward.
+func (m *Mesh) ensureLineOrientation(group []int, outward bool) {
 	if len(group) == 0 {
 		return
 	}
 	m.reorientGroup(group)
-	if !m.normalsOutward(group) {
+	if m.normalsOutward(group) != outward {
 		for _, i := range group {
 			m.Lines[i] = flipLine(m.Lines[i])
 		}

@@ -55,7 +55,23 @@ func TestFlipLine(t *testing.T) {
 // TestEnsureLineOrientationEmpty checks an empty group is a no-op (no panic).
 func TestEnsureLineOrientationEmpty(t *testing.T) {
 	m := &Mesh{}
-	m.ensureLineOrientation(nil)
+	m.ensureLineOrientation(nil, true)
+}
+
+// TestEnsureInwardNormals checks that EnsureInwardNormals makes a named electrode's normals
+// point inward regardless of the input winding, and is a no-op for an absent electrode.
+func TestEnsureInwardNormals(t *testing.T) {
+	for _, ccw := range []bool{true, false} {
+		pts, lines := squareLoop(ccw)
+		m := New(pts, lines, map[string][]int{"sq": {0, 1, 2, 3}}, false)
+		m.EnsureInwardNormals("sq")
+		if m.normalsOutward([]int{0, 1, 2, 3}) {
+			t.Errorf("ccw=%v: normals still outward after EnsureInwardNormals", ccw)
+		}
+	}
+	// Absent electrode is a no-op (must not panic).
+	pts, lines := squareLoop(true)
+	New(pts, lines, nil, false).EnsureInwardNormals("missing")
 }
 
 // TestNewEmpty checks New tolerates an empty mesh.
