@@ -11,6 +11,7 @@ package field
 
 import (
 	"fmt"
+	"math"
 
 	"oblikovati.org/traceon/core/geom2d"
 	"oblikovati.org/traceon/core/geom3d"
@@ -49,6 +50,22 @@ func (f FieldRadialBEM) PotentialAtPoint(point geom2d.Vertex) float64 {
 // electrostatic_field_at_local_point (= backend.field_radial).
 func (f FieldRadialBEM) FieldAtPoint(point geom2d.Vertex) geom2d.Vertex {
 	return radial.FieldRadial(point, f.elec.Charges, f.elec.Jac, f.elec.Pos)
+}
+
+// ChargeOnElements sums the total charge on the given electrostatic elements (by their index in
+// the solved set): for each ring element the surface charge density times its ring area
+// (2π·∮ r dl, evaluated by quadrature). Used to integrate the charge on an electrode — e.g. for
+// a capacitance. Port of charge_on_elements (= Σ area_of_element·charge).
+func (f FieldRadialBEM) ChargeOnElements(indices []int) float64 {
+	total := 0.0
+	for _, i := range indices {
+		area := 0.0
+		for k := 0; k < radial.NQuad2D; k++ {
+			area += f.elec.Jac[i][k] * f.elec.Pos[i][k][0] // jacobian × r at quad point k
+		}
+		total += 2 * math.Pi * area * f.elec.Charges[i]
+	}
+	return total
 }
 
 // CurrentFieldAtPoint returns the magnetic field (Hx, Hy, Hz) at point from the current

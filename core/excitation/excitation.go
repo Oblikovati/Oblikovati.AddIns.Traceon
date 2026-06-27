@@ -128,6 +128,25 @@ func (e *Excitation) Magnetostatic() ([]radial.Line, []radial.ExcitationType, []
 	return e.activeElements(isMagnetostaticBEM)
 }
 
+// ElectrostaticGroupIndices maps each active electrode name to the positions of its elements
+// within the slice returned by Electrostatic() (active-element order). Mirrors the names map
+// from get_electrostatic_active_elements — used to sum the charge on a named electrode.
+func (e *Excitation) ElectrostaticGroupIndices() map[string][]int {
+	all := geometry.RadialLines(e.m)
+	owner := e.lineOwners()
+	groups := map[string][]int{}
+	active := 0
+	for i := range all {
+		ent, ok := e.byName[owner[i]]
+		if !ok || !isElectrostatic(ent.typ) {
+			continue
+		}
+		groups[owner[i]] = append(groups[owner[i]], active)
+		active++
+	}
+	return groups
+}
+
 // activeElements collects the elements whose electrode's excitation type satisfies include, in
 // mesh-line order, with functional voltages evaluated at the element centre. Shared by the
 // Electrostatic and Magnetostatic builders.
