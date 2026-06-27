@@ -34,7 +34,13 @@ type fakeHost struct {
 	refBodies    []wire.BodyTopology           // model.referenceKeys per-body topology
 	attrStore    map[string]wire.AttributeInfo // per-target attributes ("target\x00name" → info)
 	sectionWires []wire.WirePolyline           // brep.sectionWithPlane result (nil → facet fallback)
+	paramExpr    string                        // current expression of the swept parameter
+	paramUnit    string                        // the swept parameter's display unit
+	paramValue   string                        // the swept parameter's display value (e.g. "3 mm")
+	paramList    []wire.ParameterInfo          // parameters.list result (for auto-pick)
+	paramSets    []wire.ParameterSetArgs       // recorded parameters.set calls (to verify restore)
 	lastGraph    wire.SetClientGraphicsArgs
+	sweepGraph   wire.SetClientGraphicsArgs // captured client-graphics push to the sweep group
 }
 
 func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
@@ -97,8 +103,30 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		var a wire.AssetRefArgs
 		_ = json.Unmarshal(req, &a)
 		return json.Marshal(h.materials[a.ID])
+	case wire.MethodParametersList:
+		return json.Marshal(wire.ListParametersResult{Parameters: h.paramList})
+	case wire.MethodParametersGetDetail:
+		return json.Marshal(wire.ParameterDetail{
+			ParameterInfo: wire.ParameterInfo{Name: "p", Expression: h.paramExpr, Value: h.paramValue},
+			Units:         h.paramUnit})
+	case wire.MethodParametersGet:
+		return json.Marshal(wire.ParameterInfo{Name: "p", Expression: h.paramExpr, Value: h.paramValue})
+	case wire.MethodParametersSet:
+		var a wire.ParameterSetArgs
+		_ = json.Unmarshal(req, &a)
+		h.paramSets = append(h.paramSets, a)
+		h.paramExpr = a.Expression
+		return json.Marshal(wire.ParameterInfo{Name: a.Name, Expression: a.Expression})
+	case wire.MethodDocumentsUpdate:
+		return json.Marshal(wire.UpdateDocumentResult{})
 	case wire.MethodClientGraphicsSet:
-		_ = json.Unmarshal(req, &h.lastGraph)
+		var g wire.SetClientGraphicsArgs
+		_ = json.Unmarshal(req, &g)
+		if g.ClientId == sweepClientID {
+			h.sweepGraph = g
+		} else {
+			h.lastGraph = g
+		}
 		return []byte("{}"), nil
 	default:
 		return []byte("{}"), nil
