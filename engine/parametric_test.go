@@ -3,7 +3,9 @@
 package engine
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"oblikovati.org/api/wire"
 )
@@ -122,6 +124,49 @@ func TestParametricStudyNoHostCalls(t *testing.T) {
 	}
 	if h.sawCall(wire.MethodBodyList) {
 		t.Errorf("cylinder study listed host bodies; calls = %v", h.calls)
+	}
+}
+
+// TestLensForCommand checks the parametric-lens commands map to their lens, and other commands
+// are not treated as parametric.
+func TestLensForCommand(t *testing.T) {
+	if l, ok := lensForCommand(EinzelLensCommandID); !ok || l != lensEinzel {
+		t.Errorf("einzel command → (%q, %v), want (einzel, true)", l, ok)
+	}
+	if l, ok := lensForCommand(CylinderLensCommandID); !ok || l != lensCylinder {
+		t.Errorf("cylinder command → (%q, %v), want (cylinder, true)", l, ok)
+	}
+	if _, ok := lensForCommand(RunStudyCommandID); ok {
+		t.Error("RunStudy must not be a parametric-lens command")
+	}
+}
+
+// TestNotifyEinzelCommandRunsParametric checks firing the einzel command selects the einzel lens
+// and runs a host-free study (the overlay is pushed without listing host bodies).
+func TestNotifyEinzelCommandRunsParametric(t *testing.T) {
+	h := &fakeHost{}
+	e := NewEngine(h)
+
+	ev, _ := json.Marshal(map[string]string{"type": wire.EventCommandStarted, "command": EinzelLensCommandID})
+	e.Notify(ev)
+	// launchStudy runs on a goroutine; wait for it to settle.
+	for i := 0; i < 200; i++ {
+		e.mu.Lock()
+		done := !e.running && e.params.lens == lensEinzel
+		e.mu.Unlock()
+		if done && len(h.lastGraph.Nodes) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e.params.lens != lensEinzel {
+		t.Errorf("lens = %q, want einzel after the command", e.params.lens)
+	}
+	if len(h.lastGraph.Nodes) == 0 {
+		t.Error("einzel command did not push a study overlay")
+	}
+	if h.sawCall(wire.MethodBodyList) {
+		t.Errorf("parametric command listed host bodies; calls = %v", h.calls)
 	}
 }
 

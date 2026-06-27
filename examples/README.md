@@ -25,3 +25,25 @@ electron trajectories are green).
 
 The same lenses can be built and run **interactively in the host** via the add-in's parametric
 lens panel (no host geometry needed) — see the engine's `Parametric lens` panel section.
+
+## Live test (MCP bridge)
+
+The parametric lenses are also exposed as commands, so the whole study runs live in the app
+driven over the MCP bridge — no host model required:
+
+```sh
+# 1. build + install the add-in next to the MCP bridge, then launch the head
+make -C .. install ADDINS_DIR=../Oblikovati/head/addins
+( cd ../Oblikovati/head && make run )            # GUI on $DISPLAY; MCP bridge on 127.0.0.1:7800
+
+# 2. drive it (from the MCPBridge repo)
+go run ./cmd/mcpdrive call create_document  '{"type":"part","name":"Lens"}'
+go run ./cmd/mcpdrive call execute_command  '{"id":"Traceon.RunEinzelLens"}'
+go run ./cmd/mcpdrive call status_get_text  '{}'      # -> "3 electrode(s), 216 elements, 7 rays — focus z = 4.460 cm"
+go run ./cmd/mcpdrive call capture_viewport '{"path":"shot.png"}'
+```
+
+`images/live-traceon-panel.png` shows the parametric-lens panel in the host, and
+`images/live-einzel-mcp.png` shows the resulting overlay — the three einzel apertures, the
+potential map (red at the biased centre electrode), and the seven electrons converging to the
+focus — all built parametrically and rendered live.
