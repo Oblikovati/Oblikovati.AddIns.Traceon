@@ -27,6 +27,9 @@ type radialGolden struct {
 	ExcTypes      []int          `json:"exc_types"`
 	ExcValues     []oracle.F     `json:"exc_values"`
 	Matrix        [][]oracle.F   `json:"matrix"` // [n][n]
+	ZAxis         []oracle.F     `json:"z_axis"`
+	UnitCharges   []oracle.F     `json:"unit_charges"`
+	AxialDerivs   [][]oracle.F   `json:"axial_derivs"` // [len(z)][9]
 }
 
 func (g *radialGolden) line(i int) Line {
@@ -114,6 +117,55 @@ func TestRadialAgainstGolden(t *testing.T) {
 			oracle.CheckClose(t, "matrix", matrix[i*n+j], fx.Matrix[i][j].Float())
 		}
 	}
+}
+
+// TestAxialDerivativesRadial verifies the accumulated on-axis derivatives match upstream
+// axial_derivatives_radial over the sampled axis.
+func TestAxialDerivativesRadial(t *testing.T) {
+	var fx radialGolden
+	oracle.LoadGolden(t, "radial", &fx)
+	lines := fx.lines()
+	jac, pos := FillJacobianBufferRadial(lines)
+	z := make([]float64, len(fx.ZAxis))
+	charges := make([]float64, len(fx.UnitCharges))
+	for i := range z {
+		z[i] = fx.ZAxis[i].Float()
+	}
+	for i := range charges {
+		charges[i] = fx.UnitCharges[i].Float()
+	}
+	got := AxialDerivativesRadial(z, charges, jac, pos)
+	for i := range z {
+		for l := 0; l < Deriv2DMax; l++ {
+			oracle.CheckClose(t, "axial_deriv", got[i][l], fx.AxialDerivs[i][l].Float())
+		}
+	}
+}
+
+// TestRadialDerivsEvaluation checks the interpolated-field evaluation formula directly with
+// a hand-built coefficient set: a single uniform interval whose only nonzero derivative is
+// the 0th order (a constant potential along the axis). On-axis (r=0) the potential must
+// equal that constant, the field must be the negative of the encoded 1st derivative, and a
+// point outside [z0, zlast] must return zero.
+func TestRadialDerivsEvaluation(t *testing.T) {
+	z := []float64{0, 1, 2}
+	// Two intervals; each block is [c5,c4,c3,c2,c1,c0] per derivative order. Encode a
+	// constant 0th derivative (=3) and a constant 1st derivative (=5); higher orders zero.
+	coeffs := make(AxialCoeffs, 2)
+	for iv := 0; iv < 2; iv++ {
+		coeffs[iv][0][5] = 3 // d0 = 3 (constant term)
+		coeffs[iv][1][5] = 5 // d1 = 5
+	}
+	onAxis := geom2d.Vertex{0, 0, 0.5}
+	oracle.CheckClose(t, "pot on-axis", PotentialRadialDerivs(onAxis, z, coeffs), 3.0)
+	f := FieldRadialDerivs(onAxis, z, coeffs)
+	oracle.CheckClose(t, "Ez = -d1", f[2], -5.0) // field_z = -derivs[1] on axis
+	oracle.CheckClose(t, "Er on-axis", f[0], 0.0)
+
+	outside := geom2d.Vertex{0, 0, 9}
+	oracle.CheckClose(t, "pot outside", PotentialRadialDerivs(outside, z, coeffs), 0.0)
+	fo := FieldRadialDerivs(outside, z, coeffs)
+	oracle.CheckClose(t, "field outside", fo[2], 0.0)
 }
 
 // TestChargeRadialVertical ports test_charge_radial_vertical: a unit-density vertical line

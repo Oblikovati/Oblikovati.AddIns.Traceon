@@ -219,7 +219,15 @@ def _radial() -> dict:
     matrix = np.zeros((n, n))
     B.fill_matrix_radial(matrix, lines, exc_types, exc_values, jac, pos, 0, n - 1)
 
+    # On-axis accumulated derivatives (AxialDerivativesRadial) for unit charges.
+    z_axis = np.linspace(-1.0, 2.0, 8)
+    unit_charges = np.array([1.0, 0.7, -0.4])
+    axial_derivs = B.axial_derivatives_radial(z_axis, unit_charges, jac, pos).tolist()
+
     return {
+        "z_axis": z_axis.tolist(),
+        "unit_charges": unit_charges.tolist(),
+        "axial_derivs": axial_derivs,
         "lines": lines.tolist(),
         "jac": jac.tolist(),
         "pos": pos.tolist(),
@@ -283,6 +291,94 @@ def _solver() -> dict:
         "matrix": matrix.tolist(),
         "rhs": rhs.tolist(),
         "charges": charges.tolist(),
+    }
+
+
+@fixture("interp", "interp")
+def _interp() -> dict:
+    """scipy not-a-knot cubic and BPoly-derived quintic Hermite coefficients, the two
+    interpolations the axial field series uses, over equally-spaced sample data."""
+    import numpy as np
+    from scipy.interpolate import CubicSpline, BPoly, PPoly
+
+    rng = np.random.default_rng(424242)
+    z = np.linspace(-2.0, 3.0, 12)
+    y = rng.uniform(-1, 1, size=z.size)
+    dy = rng.uniform(-1, 1, size=z.size)
+    d2y = rng.uniform(-1, 1, size=z.size)
+
+    cubic = CubicSpline(z, y).c.T.tolist()  # (n-1, 4) descending: [c3,c2,c1,c0]
+
+    # _get_one_dimensional_high_order_ppoly: quintic Hermite via Bernstein → power basis.
+    bpoly = BPoly.from_derivatives(z, np.array([y, dy, d2y]).T)
+    quintic = PPoly.from_bernstein_basis(bpoly).c.T.tolist()  # (n-1, 6): [c5..c0]
+
+    return {
+        "z": z.tolist(),
+        "y": y.tolist(),
+        "dy": dy.tolist(),
+        "d2y": d2y.tolist(),
+        "cubic": cubic,
+        "quintic": quintic,
+    }
+
+
+@fixture("field", "field")
+def _field() -> dict:
+    """Axial-series field interpolation: per-z axial derivatives, the assembled quintic
+    coefficients, and the interpolated potential/field — plus the direct-BEM field/potential
+    the FieldRadialBEM wrappers expose. Driven by a solved charge distribution."""
+    import numpy as np
+    import traceon.backend as B
+    from traceon.field import _quintic_spline_coefficients
+
+    def line4(r0, z0, r1, z1):
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    # A small ring of charged elements around the axis (a crude electrode), then solve.
+    lines = np.array([
+        line4(1.0, -0.5, 1.0, 0.5),
+        line4(1.0, 0.5, 1.0, 1.5),
+        line4(1.0, -1.5, 1.0, -0.5),
+    ])
+    n = len(lines)
+    types = np.array([1, 1, 1], dtype=np.uint8)
+    values = np.array([1.0, 0.5, 0.5])
+    jac, pos = B.fill_jacobian_buffer_radial(lines)
+    matrix = np.zeros((n, n))
+    B.fill_matrix_radial(matrix, lines, types, values, jac, pos, 0, n - 1)
+    for i in range(n):
+        matrix[i, i] = B.self_potential_radial(lines[i])
+    charges = np.linalg.solve(matrix, values)
+
+    # Axial interpolation over [zmin, zmax].
+    zmin, zmax, N = -2.0, 2.0, 20
+    z = np.linspace(zmin, zmax, N)
+    derivs = B.axial_derivatives_radial(z, charges, jac, pos)           # (N, 9)
+    coeffs = _quintic_spline_coefficients(z, derivs.T)                  # (N-1, 9, 6)
+
+    eval_points = np.array([
+        [0.0, 0.0, 0.0], [0.1, 0.0, 0.3], [0.2, 0.0, -0.7], [0.05, 0.0, 1.1],
+        [0.0, 0.0, 5.0],  # outside [zmin, zmax] → zero
+    ])
+    pot_direct = [float(B.potential_radial(p, charges, jac, pos)) for p in eval_points]
+    field_direct = [[float(c) for c in B.field_radial(p, charges, jac, pos)] for p in eval_points]
+    pot_interp = [float(B.potential_radial_derivs(p, z, coeffs)) for p in eval_points]
+    field_interp = [[float(c) for c in B.field_radial_derivs(p, z, coeffs)] for p in eval_points]
+
+    return {
+        "lines": lines.tolist(),
+        "charges": charges.tolist(),
+        "z": z.tolist(),
+        "derivs": derivs.tolist(),
+        "coeffs": coeffs.tolist(),
+        "eval_points": eval_points.tolist(),
+        "pot_direct": pot_direct,
+        "field_direct": field_direct,
+        "pot_interp": pot_interp,
+        "field_interp": field_interp,
     }
 
 
