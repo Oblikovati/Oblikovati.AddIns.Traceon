@@ -27,6 +27,19 @@ go.work.sum
 # env file
 .env
 
+# The c-shared library build output (Makefile writes here).
+/build/
+
+# C ABI header vendored from the oblikovati.org/api module by `make sync-header`.
+/include/
+
+# Built CLI driver binaries (go build ./cmd/traceon... drops them at the repo root).
+/traceon
+
+# Python oracle venv (upstream Traceon clone is a sibling; fixtures regen from it).
+.venv/
+__pycache__/
+
 # Editor/IDE
 # .idea/
 # .vscode/
