@@ -238,6 +238,54 @@ def _radial() -> dict:
     }
 
 
+@fixture("solver", "solver")
+def _solver() -> dict:
+    """Electrostatic radial solve: the integrated singular self-terms, the assembled
+    matrix (with overwritten diagonal), the right-hand side, and the solved charges —
+    reproducing traceon.solver.ElectrostaticSolverRadial's get_matrix + solve_matrix on a
+    small explicit line set (no mesher needed)."""
+    import numpy as np
+    import traceon.backend as B
+
+    def line4(r0, z0, r1, z1):
+        return [[r0, 0.0, z0], [r1, 0.0, z1],
+                [r0 + (r1 - r0) / 3, 0.0, z0 + (z1 - z0) / 3],
+                [r0 + 2 * (r1 - r0) / 3, 0.0, z0 + 2 * (z1 - z0) / 3]]
+
+    lines = np.array([line4(1.0, 0.0, 1.0, 1.0), line4(2.0, 0.0, 2.0, 0.5), line4(1.0, 0.0, 1.5, 0.5)])
+    n = len(lines)
+    types = np.array([1, 1, 3], dtype=np.uint8)   # VOLTAGE_FIXED, VOLTAGE_FIXED, DIELECTRIC
+    values = np.array([1.0, 0.5, 2.0])            # volts, volts, relative permittivity
+
+    jac, pos = B.fill_jacobian_buffer_radial(lines)
+    matrix = np.zeros((n, n))
+    B.fill_matrix_radial(matrix, lines, types, values, jac, pos, 0, n - 1)
+
+    self_potential = [float(B.self_potential_radial(lines[i])) for i in range(n)]
+    self_field = [float(B.self_field_dot_normal_radial(lines[i], values[i])) for i in range(n)]
+
+    # Overwrite the diagonal exactly as SolverRadial.get_matrix does.
+    for i in range(n):
+        if types[i] == 3:  # DIELECTRIC
+            matrix[i, i] = self_field[i] - 1
+        else:
+            matrix[i, i] = self_potential[i]
+
+    rhs = np.array([1.0, 0.5, 0.0])  # voltage→value, dielectric→0
+    charges = np.linalg.solve(matrix, rhs)
+
+    return {
+        "lines": lines.tolist(),
+        "types": types.tolist(),
+        "values": values.tolist(),
+        "self_potential": self_potential,
+        "self_field": self_field,
+        "matrix": matrix.tolist(),
+        "rhs": rhs.tolist(),
+        "charges": charges.tolist(),
+    }
+
+
 # --------------------------------------------------------------------------------------
 
 def main() -> int:
