@@ -28,6 +28,7 @@ type fakeHost struct {
 	currentsJSON string          // traceon/currents attribute payload ("" = unset)
 	magnetsJSON  string          // traceon/magnets attribute payload ("" = unset)
 	permJSON     string          // traceon/permeability attribute payload ("" = unset)
+	materials    map[string]wire.MaterialInfo // id → material, for materials.get
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -64,6 +65,10 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		}
 		return json.Marshal(wire.AttributeResult{Found: true, Attribute: wire.AttributeInfo{
 			Set: attrSet, Name: args.Name, Value: types.StringVariant(payload)}})
+	case wire.MethodMaterialsGet:
+		var a wire.AssetRefArgs
+		_ = json.Unmarshal(req, &a)
+		return json.Marshal(h.materials[a.ID])
 	case wire.MethodClientGraphicsSet:
 		_ = json.Unmarshal(req, &h.lastGraph)
 		return []byte("{}"), nil
@@ -325,6 +330,50 @@ func TestIronStudy(t *testing.T) {
 	}
 	if res.IronCount != 1 || res.ElectrodeCount != 0 {
 		t.Errorf("counts = (e=%d,iron=%d), want (0,1)", res.ElectrodeCount, res.IronCount)
+	}
+}
+
+// materialHost is a ring body carrying the given magnetic material (no role-naming): the study
+// must classify it from the material alone.
+func materialHost(mat wire.MaterialInfo) *fakeHost {
+	h := ringHost()
+	h.bodies = []wire.BodyInfo{{Index: 0, Name: "Pole", Solid: true, Key: "m0", MaterialID: "mat"}}
+	h.materials = map[string]wire.MaterialInfo{"mat": mat}
+	return h
+}
+
+// TestMaterialDrivenIron checks a body whose assigned material is soft-magnetic is classified as
+// magnetizable iron (with the material's μr), without any "iron" in its name.
+func TestMaterialDrivenIron(t *testing.T) {
+	mat := wire.MaterialInfo{ID: "mat", Magnetic: types.Magnetic{Class: types.SoftMagnetic, RelativePermeability: 2500}}
+	res, err := NewEngine(materialHost(mat)).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.IronCount != 1 || res.ElectrodeCount != 0 {
+		t.Errorf("counts = (e=%d, iron=%d), want (0, 1)", res.ElectrodeCount, res.IronCount)
+	}
+}
+
+// TestMaterialRole maps the magnetic class to a role + value: soft → iron(μr), hard → magnet
+// (M = Br/μ0), non-magnetic → no role.
+func TestMaterialRole(t *testing.T) {
+	e := NewEngine(&fakeHost{materials: map[string]wire.MaterialInfo{
+		"soft": {Magnetic: types.Magnetic{Class: types.SoftMagnetic, RelativePermeability: 1000}},
+		"hard": {Magnetic: types.Magnetic{Class: types.HardMagnetic, Remanence: 1.3}},
+		"alum": {Magnetic: types.Magnetic{Class: types.NonMagnetic}},
+	}})
+	if role, v, ok := e.materialRole("soft"); !ok || role != "iron" || v != 1000 {
+		t.Errorf("soft → (%q, %g, %v), want (iron, 1000, true)", role, v, ok)
+	}
+	if role, v, ok := e.materialRole("hard"); !ok || role != "magnet" || math.Abs(v-1.3/1.25663706127e-06) > 1 {
+		t.Errorf("hard → (%q, %g, %v), want (magnet, ~1.03e6, true)", role, v, ok)
+	}
+	if _, _, ok := e.materialRole("alum"); ok {
+		t.Error("non-magnetic material should yield no role")
+	}
+	if _, _, ok := e.materialRole(""); ok {
+		t.Error("empty material id should yield no role")
 	}
 }
 
