@@ -72,6 +72,15 @@ deflects the beam (it reports a focus and the rays spiral in the field):
 
 ![magnet live](validation/testdata/magnet_live.png)
 
+### Fast tracing (axial interpolation)
+
+With the panel's "Fast trace (axial)" toggle on, the beam is traced through the fast
+axial-series interpolation of the field (`FieldRadialAxial`) instead of the direct boundary
+integral — Traceon's signature speed feature, an O(1) field evaluation per step. It is
+verified to reproduce the physics exactly: the einzel lens focuses at the **identical** focal
+length (z = 8.190615) whether traced directly or through the axial interpolation
+(`validation/einzel_test.go` `TestEinzelFastTrace`).
+
 ### Procedure
 
 The add-in is driven from the running application; the study is `Traceon.RunStudy` (a ribbon

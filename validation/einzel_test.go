@@ -114,6 +114,63 @@ func TestEinzelLensFocus(t *testing.T) {
 	t.Logf("einzel focus z = %.6f (Traceon %.6f)", got[2], g.Focus[2])
 }
 
+// TestEinzelFastTrace checks the fast axial-series interpolation reproduces the einzel focal
+// length the direct boundary-integral trace gives — the speed feature must not change the
+// physics. The lens is solved once, then traced both ways through the same field.
+func TestEinzelFastTrace(t *testing.T) {
+	g := loadEinzel(t)
+
+	// Rebuild the solved field (mirrors runEinzel) so we can swap the evaluator.
+	lines := make([]radial.Line, len(g.Lines))
+	for i := range g.Lines {
+		for v := 0; v < 4; v++ {
+			lines[i][v] = geom2d.Vertex{g.Lines[i][v][0], g.Lines[i][v][1], g.Lines[i][v][2]}
+		}
+	}
+	types := make([]radial.ExcitationType, len(g.Types))
+	for i, ti := range g.Types {
+		types[i] = radial.ExcitationType(ti)
+	}
+	charges, err := solver.SolveElectrostatic(lines, types, g.Values)
+	if err != nil {
+		t.Fatalf("solve: %v", err)
+	}
+	bem := field.NewFieldRadialBEM(charges)
+	axial, err := field.NewFieldRadialAxial(charges, g.LaunchZ-1, g.Focus[2]+2, 400)
+	if err != nil {
+		t.Fatalf("axial: %v", err)
+	}
+
+	directFocus := traceFocus(t, g, bem.FieldAtPoint)
+	fastFocus := traceFocus(t, g, axial.FieldAtPoint)
+	if !isClose(fastFocus, directFocus, 1e-3, 1e-3) {
+		t.Errorf("fast-trace focus z = %.6f, direct = %.6f (should match)", fastFocus, directFocus)
+	}
+	t.Logf("einzel focus: direct %.6f, fast-axial %.6f", directFocus, fastFocus)
+}
+
+// traceFocus traces the einzel ray bundle through the given electrostatic field evaluator and
+// returns the focal z.
+func traceFocus(t *testing.T, g einzelGolden, eval func(geom2d.Vertex) geom2d.Vertex) float64 {
+	t.Helper()
+	fieldFn := func(pos, _ geom3d.Vec3) (elec, mag geom3d.Vec3) {
+		e := eval(geom2d.Vertex{pos[0], pos[1], pos[2]})
+		return geom3d.Vec3{e[0], e[1], e[2]}, geom3d.Vec3{}
+	}
+	bounds := tracing.Bounds{{g.Bounds[0][0], g.Bounds[0][1]}, {g.Bounds[1][0], g.Bounds[1][1]}, {g.Bounds[2][0], g.Bounds[2][1]}}
+	v0 := tracing.VelocityVec(g.EnergyEV, geom3d.Vec3{0, 0, 1}, constants.ElectronMass)
+	var trajectories [][]tracing.State
+	for _, r0 := range g.Radii {
+		_, states := tracing.TraceParticle(geom3d.Vec3{r0, 0, g.LaunchZ}, v0, g.ChargeOverMass, fieldFn, bounds, 1e-8)
+		trajectories = append(trajectories, states)
+	}
+	f, err := focus.FocusPosition(trajectories)
+	if err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	return f[2]
+}
+
 // TestEinzelTrajectory checks the outermost ray's full trajectory matches Traceon step for
 // step (tight early; slightly looser late as -ffast-math rounding accumulates over ~1200 steps).
 func TestEinzelTrajectory(t *testing.T) {

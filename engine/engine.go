@@ -30,6 +30,7 @@ type studyParams struct {
 	numRays       int     // number of parallel rays launched
 	coilCurrent   float64 // default current for coil bodies (amperes)
 	magnetisation float64 // default axial magnetisation for magnet bodies (A/m)
+	fastTrace     bool    // trace through the fast axial-series interpolation of the field
 }
 
 func defaultParams() studyParams {
