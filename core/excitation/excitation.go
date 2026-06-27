@@ -68,11 +68,14 @@ func (e *Excitation) AddDielectric(name string, permittivity float64) {
 }
 
 // AddElectrostaticBoundary marks the named electrodes as electrostatic boundaries (E·n = 0),
-// implemented — as upstream — as a dielectric with relative permittivity zero. Placing a
-// boundary around the modelled region greatly improves the solve's conditioning. Port of
-// add_electrostatic_boundary. Panics if any name is not an electrode in the mesh.
+// implemented — as upstream — as a dielectric with relative permittivity zero. Each boundary's
+// normals are first made inward-pointing (the orientation the boundary kernel assumes), then
+// the dielectric is assigned. Placing a boundary around the modelled region greatly improves
+// the solve's conditioning. Port of add_electrostatic_boundary (ensure_inward_normals=True).
+// Panics if any name is not an electrode in the mesh.
 func (e *Excitation) AddElectrostaticBoundary(names ...string) {
 	for _, name := range names {
+		e.m.EnsureInwardNormals(name)
 		e.AddDielectric(name, 0)
 	}
 }
