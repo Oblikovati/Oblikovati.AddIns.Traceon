@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// Package mesh is the pure-Go port of Traceon's radial (2D line-element) mesh container
-// and the topology operations the parametric mesher relies on: point deduplication
-// (so adjacent path segments share nodes), connected-component grouping, and line
-// orientation/outward-normal consistency. The 3D triangle machinery in upstream
-// mesher.py is closed-source "Traceon Pro" and is intentionally not ported.
+// Package mesh is the pure-Go port of Traceon's radial mesh container and the topology
+// operations the parametric mesher relies on: point deduplication (so adjacent path segments
+// share nodes), connected-component grouping, and line orientation/outward-normal consistency.
 //
-// A Mesh holds a flat point array and a line-element index array; each element is two
-// indices (a straight "line") or four ("line4": [start, end, node@1/3, node@2/3]) — the
-// same node ordering the radial solver consumes (see core/radial.reorder).
+// A Mesh holds a flat point array and a line-element index array; each element is two indices
+// (a straight "line") or four ("line4": [start, end, node@1/3, node@2/3]) — the same node
+// ordering the radial solver consumes (see core/radial.reorder). TriangleMesh (triangle.go) is
+// the surface counterpart, used for radial current coils (a planar cross-section). The
+// general 3D triangle SOLVER remains closed-source "Traceon Pro" and is out of scope.
 package mesh
 
 import (
