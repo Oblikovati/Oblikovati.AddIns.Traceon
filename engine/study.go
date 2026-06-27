@@ -21,6 +21,7 @@ import (
 type StudyResult struct {
 	ElectrodeCount   int
 	CoilCount        int
+	MagnetCount      int
 	ElementCount     int
 	RayCount         int
 	FocusZ           float64 // axial focus position (cm), NaN if the beam does not cross the axis
@@ -83,16 +84,17 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 	params := e.params
 	e.mu.Unlock()
 
-	electrodes, coils, err := e.collectBodies(params)
+	electrodes, coils, magnets, err := e.collectBodies(params)
 	if err != nil {
 		return nil, err
 	}
-	if len(electrodes) == 0 && len(coils) == 0 {
-		return nil, fmt.Errorf("no solid bodies could be sectioned into electrodes or coils")
+	if len(electrodes) == 0 && len(coils) == 0 && len(magnets) == 0 {
+		return nil, fmt.Errorf("no solid bodies could be sectioned into electrodes, coils, or magnets")
 	}
 
-	// Electrostatic charges from the electrode boundaries, magnetic current rings from the
-	// coils — combined into one field the beam is traced through (Lorentz force E + μ₀ v×H).
+	// Electrostatic charges from the electrode boundaries; magnetic current rings from the
+	// coils; magnetostatic surface charges from the permanent magnets — combined into one
+	// field the beam is traced through (Lorentz force E + μ₀ v×H).
 	var elec solver.EffectivePointCharges
 	lines, types, values := assembleElements(electrodes)
 	if len(lines) > 0 {
@@ -102,17 +104,19 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 		}
 	}
 	current := buildCoilCharges(coils)
-	bem := field.NewFieldRadialBEMFull(elec, solver.EffectivePointCharges{}, current)
+	mag := buildMagnetCharges(magnets)
+	bem := field.NewFieldRadialBEMFull(elec, mag, current)
 
-	rays := e.traceBeam(bem, electrodes, coils, params)
+	rays := e.traceBeam(bem, electrodes, coils, magnets, params)
 
-	nodes := renderNodes(electrodes, coils, bem, rays)
+	nodes := renderNodes(electrodes, coils, magnets, bem, rays)
 	if err := e.pushGraphics(nodes); err != nil {
 		return nil, err
 	}
 	return &StudyResult{
 		ElectrodeCount:   len(electrodes),
 		CoilCount:        len(coils),
+		MagnetCount:      len(magnets),
 		ElementCount:     len(lines),
 		RayCount:         len(rays),
 		FocusZ:           focusZcm(rays),
@@ -128,17 +132,19 @@ func (e *Engine) RunStudy(int) (*StudyResult, error) {
 // unset, the einzel convention applies — the panel voltage biases the axially central
 // electrode, the others are grounded. Coil currents come from traceon/currents, else the
 // panel coil current.
-func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, error) {
+func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, []magnet, error) {
 	list, err := e.api.Body().List()
 	if err != nil {
-		return nil, nil, fmt.Errorf("list bodies: %w", err)
+		return nil, nil, nil, fmt.Errorf("list bodies: %w", err)
 	}
 	currents := e.coilCurrents()
+	magnetisations := e.magnetMagnetisations()
 	voltages := e.electrodeVoltages()
 
 	var elecProfs []*profile
 	var elecIdx []int
 	var coils []coil
+	var magnets []magnet
 	for _, b := range list.Bodies {
 		if !b.Solid {
 			continue
@@ -149,6 +155,10 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, error) 
 		}
 		if amps, ok := isCoil(b.Index, b.Name, currents, params.coilCurrent); ok {
 			coils = append(coils, coil{prof: prof, current: amps})
+			continue
+		}
+		if m, ok := isMagnet(b.Index, b.Name, magnetisations, params.magnetisation); ok {
+			magnets = append(magnets, magnet{prof: prof, magnetisation: m})
 			continue
 		}
 		elecProfs = append(elecProfs, prof)
@@ -170,7 +180,7 @@ func (e *Engine) collectBodies(params studyParams) ([]electrode, []coil, error) 
 		}
 		electrodes[i] = electrode{prof: prof, voltage: v}
 	}
-	return electrodes, coils, nil
+	return electrodes, coils, magnets, nil
 }
 
 // centralElectrode returns the index of the electrode whose axial mid-point is closest to
@@ -256,8 +266,8 @@ func (e *Engine) activeDocID() (uint64, bool) {
 // traceBeam launches params.numRays parallel rays from below the geometry (in metres), spread
 // across the radial aperture, along +z, and traces each through the BEM field. Returns the
 // trajectories (in metres).
-func (e *Engine) traceBeam(bem field.FieldRadialBEM, electrodes []electrode, coils []coil, params studyParams) [][]tracing.State {
-	rMaxCm, zMinCm, zMaxCm := studyExtent(electrodes, coils)
+func (e *Engine) traceBeam(bem field.FieldRadialBEM, electrodes []electrode, coils []coil, magnets []magnet, params studyParams) [][]tracing.State {
+	rMaxCm, zMinCm, zMaxCm := studyExtent(electrodes, coils, magnets)
 	rMax, zMin, zMax := rMaxCm*cmToMetres, zMinCm*cmToMetres, zMaxCm*cmToMetres
 	// Trace through a generous downstream drift region so the focus (which forms past the
 	// lens) is captured. The radial bound is loose so a converging ray is not clipped early.
@@ -272,7 +282,7 @@ func (e *Engine) traceBeam(bem field.FieldRadialBEM, electrodes []electrode, coi
 	fieldFn := func(pos, _ geom3d.Vec3) (elec, mag geom3d.Vec3) {
 		p := geom2d.Vertex{pos[0], pos[1], pos[2]}
 		ef := bem.FieldAtPoint(p)
-		hf := bem.CurrentFieldAtPoint(p)
+		hf := bem.MagnetostaticFieldAtPoint(p) // current rings + permanent-magnet surface charges
 		return geom3d.Vec3{ef[0], ef[1], ef[2]}, geom3d.Vec3{hf[0], hf[1], hf[2]}
 	}
 	v0 := tracing.VelocityVec(params.energyEV, geom3d.Vec3{0, 0, 1}, constants.ElectronMass)
@@ -308,11 +318,12 @@ func combinedExtent(electrodes []electrode) (rMax, zMin, zMax float64) {
 	return rMax, zMin, zMax
 }
 
-// studyExtent returns the (r, z) bounding box (cm) spanning every electrode and coil.
-func studyExtent(electrodes []electrode, coils []coil) (rMax, zMin, zMax float64) {
+// studyExtent returns the (r, z) bounding box (cm) spanning every electrode, coil, and magnet.
+func studyExtent(electrodes []electrode, coils []coil, magnets []magnet) (rMax, zMin, zMax float64) {
 	er, ez0, ez1 := combinedExtent(electrodes)
 	cr, cz0, cz1 := coilExtent(coils)
-	return math.Max(er, cr), math.Min(ez0, cz0), math.Max(ez1, cz1)
+	mr, mz0, mz1 := magnetExtent(magnets)
+	return math.Max(er, math.Max(cr, mr)), math.Min(ez0, math.Min(cz0, mz0)), math.Max(ez1, math.Max(ez1, math.Max(cz1, mz1)))
 }
 
 // focusZcm returns the axial (z) focus of the ray bundle in cm, or NaN if it cannot be

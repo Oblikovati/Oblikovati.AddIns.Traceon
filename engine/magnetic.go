@@ -10,12 +10,17 @@ import (
 
 	"oblikovati.org/traceon/core/geom2d"
 	"oblikovati.org/traceon/core/geom3d"
+	"oblikovati.org/traceon/core/radial"
 	"oblikovati.org/traceon/core/solver"
 )
 
-// attrCurrents names the document attribute holding per-coil currents: a JSON object mapping
-// body index (as a string) to amperes, e.g. {"3": 2.5}.
-const attrCurrents = "currents"
+// attrCurrents / attrMagnets name the document attributes holding per-coil currents and
+// per-magnet axial magnetisations: JSON objects mapping body index (as a string) to amperes
+// and to A/m respectively, e.g. {"3": 2.5}.
+const (
+	attrCurrents = "currents"
+	attrMagnets  = "magnets"
+)
 
 // coilTriGrid is the (r, z) triangulation resolution for a coil cross-section: the bounding
 // region is split into this many bands each way, then two triangles per cell. Finer grids
@@ -32,12 +37,77 @@ type coil struct {
 // coilCurrents reads the per-coil current map (body index → amperes) from the active
 // document's traceon/currents attribute. Returns an empty map when unset or unreadable.
 func (e *Engine) coilCurrents() map[int]float64 {
+	return e.floatAttributeMap(attrCurrents)
+}
+
+// magnet is a sectioned permanent-magnet body: its (r, z) cross-section (cm, for rendering)
+// and its axial magnetisation (A/m).
+type magnet struct {
+	prof          *profile
+	magnetisation float64
+}
+
+// buildMagnetCharges turns permanent magnets into magnetostatic surface charges: each
+// boundary element carries a magnetic charge equal to the axial magnetisation projected onto
+// the element normal (n_z · M). Mirrors MagnetostaticSolverRadial.get_permanent_magnet_field.
+func buildMagnetCharges(magnets []magnet) solver.EffectivePointCharges {
+	var lines []radial.Line
+	var charges []float64
+	for _, m := range magnets {
+		ml, _, _ := m.prof.lineElements(0, cmToMetres)
+		for _, l := range ml {
+			lines = append(lines, l)
+			n := radial.ElementNormal(l) // (n_r, n_z) unit normal
+			charges = append(charges, n[1]*m.magnetisation)
+		}
+	}
+	if len(lines) == 0 {
+		return solver.EffectivePointCharges{}
+	}
+	jac, pos := radial.FillJacobianBufferRadial(lines)
+	return solver.EffectivePointCharges{Charges: charges, Jac: jac, Pos: pos}
+}
+
+// isCoil reports whether a body is a current coil rather than an electrode: it carries a
+// current in the traceon/currents attribute, or its name contains "coil" (the drivable
+// convention when the attribute cannot be set). The resolved current (amperes) is returned.
+func isCoil(index int, name string, currents map[int]float64, defaultCurrent float64) (float64, bool) {
+	if c, ok := currents[index]; ok {
+		return c, true
+	}
+	if strings.Contains(strings.ToLower(name), "coil") {
+		return defaultCurrent, true
+	}
+	return 0, false
+}
+
+// isMagnet reports whether a body is an axially-magnetised permanent magnet: it carries a
+// magnetisation in the traceon/magnets attribute, or its name contains "magnet". The resolved
+// axial magnetisation (A/m, along the optical axis) is returned.
+func isMagnet(index int, name string, magnets map[int]float64, defaultMag float64) (float64, bool) {
+	if m, ok := magnets[index]; ok {
+		return m, true
+	}
+	if strings.Contains(strings.ToLower(name), "magnet") {
+		return defaultMag, true
+	}
+	return 0, false
+}
+
+// magnetMagnetisations reads the per-magnet axial magnetisation map (body index → A/m) from
+// the active document's traceon/magnets attribute.
+func (e *Engine) magnetMagnetisations() map[int]float64 {
+	return e.floatAttributeMap(attrMagnets)
+}
+
+// floatAttributeMap reads a JSON {bodyIndex: value} attribute in the traceon set into a map.
+func (e *Engine) floatAttributeMap(name string) map[int]float64 {
 	out := map[int]float64{}
 	docID, ok := e.activeDocID()
 	if !ok {
 		return out
 	}
-	res, err := e.api.Attributes().Get(docID, attrSet, attrCurrents)
+	res, err := e.api.Attributes().Get(docID, attrSet, name)
 	if err != nil || !res.Found {
 		return out
 	}
@@ -55,19 +125,6 @@ func (e *Engine) coilCurrents() map[int]float64 {
 		}
 	}
 	return out
-}
-
-// isCoil reports whether a body is a current coil rather than an electrode: it carries a
-// current in the traceon/currents attribute, or its name contains "coil" (the drivable
-// convention when the attribute cannot be set). The resolved current (amperes) is returned.
-func isCoil(index int, name string, currents map[int]float64, defaultCurrent float64) (float64, bool) {
-	if c, ok := currents[index]; ok {
-		return c, true
-	}
-	if strings.Contains(strings.ToLower(name), "coil") {
-		return defaultCurrent, true
-	}
-	return 0, false
 }
 
 // buildCoilCharges turns coil cross-sections into the effective current rings the magnetic
@@ -145,18 +202,48 @@ func coilExtent(coils []coil) (rMax, zMin, zMax float64) {
 	return rMax, zMin, zMax
 }
 
-// coilNode draws each coil cross-section outline (cm) in a copper colour so coils are
-// visually distinct from electrodes.
-func coilNode(coils []coil) (node graphicsLines, has bool) {
-	for _, c := range coils {
-		for _, loop := range c.prof.loops {
+// magnetExtent returns the (r, z) bounding box (cm) spanning every permanent magnet.
+func magnetExtent(magnets []magnet) (rMax, zMin, zMax float64) {
+	rMax, zMin, zMax = 0, math.Inf(1), math.Inf(-1)
+	for _, m := range magnets {
+		r, lo, hi := m.prof.extent()
+		rMax = math.Max(rMax, r)
+		zMin = math.Min(zMin, lo)
+		zMax = math.Max(zMax, hi)
+	}
+	return rMax, zMin, zMax
+}
+
+// profilesNode draws each profile outline (cm) as line segments — used for the coil and
+// magnet overlays (distinguished by colour at the call site).
+func profilesNode(loops func(yield func(*profile))) (node graphicsLines, has bool) {
+	loops(func(p *profile) {
+		for _, loop := range p.loops {
 			for i := 0; i+1 < len(loop); i++ {
 				node.add(loop[i], loop[i+1])
 				has = true
 			}
 		}
-	}
+	})
 	return node, has
+}
+
+// coilNode draws each coil cross-section outline (cm).
+func coilNode(coils []coil) (graphicsLines, bool) {
+	return profilesNode(func(yield func(*profile)) {
+		for _, c := range coils {
+			yield(c.prof)
+		}
+	})
+}
+
+// magnetNode draws each permanent-magnet cross-section outline (cm).
+func magnetNode(magnets []magnet) (graphicsLines, bool) {
+	return profilesNode(func(yield func(*profile)) {
+		for _, m := range magnets {
+			yield(m.prof)
+		}
+	})
 }
 
 // graphicsLines accumulates (r, z) line segments for a graphics node (drawn in the xz-plane).

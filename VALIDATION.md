@@ -61,6 +61,17 @@ magnetic lens — the beam visibly converges as it passes through the coil:
 
 ![coil live](validation/testdata/coil_live.png)
 
+### Permanent magnets
+
+A body is treated as an axially-magnetised **permanent magnet** when it carries a
+magnetisation in the `traceon/magnets` attribute or its name contains "magnet". Each boundary
+element gets a magnetic surface charge `n_z·M` (the magnetisation projected on the element
+normal), mirroring `MagnetostaticSolverRadial.get_permanent_magnet_field`; the beam is traced
+through the resulting field. Live: a ring magnet renamed "Magnet1" at M = 1e6 A/m strongly
+deflects the beam (it reports a focus and the rays spiral in the field):
+
+![magnet live](validation/testdata/magnet_live.png)
+
 ### Procedure
 
 The add-in is driven from the running application; the study is `Traceon.RunStudy` (a ribbon

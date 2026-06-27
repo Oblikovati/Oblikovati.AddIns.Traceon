@@ -26,6 +26,7 @@ type fakeHost struct {
 	bodies       []wire.BodyInfo // nil → one solid electrode body
 	voltagesJSON string          // traceon/voltages attribute payload ("" = unset)
 	currentsJSON string          // traceon/currents attribute payload ("" = unset)
+	magnetsJSON  string          // traceon/magnets attribute payload ("" = unset)
 	lastGraph    wire.SetClientGraphicsArgs
 }
 
@@ -49,8 +50,11 @@ func (h *fakeHost) Call(method string, req []byte) ([]byte, error) {
 		var args wire.GetAttributeArgs
 		_ = json.Unmarshal(req, &args)
 		payload := h.voltagesJSON
-		if args.Name == attrCurrents {
+		switch args.Name {
+		case attrCurrents:
 			payload = h.currentsJSON
+		case attrMagnets:
+			payload = h.magnetsJSON
 		}
 		if payload == "" {
 			return json.Marshal(wire.AttributeResult{Found: false})
@@ -250,6 +254,53 @@ func TestCoilByCurrentAttribute(t *testing.T) {
 	}
 	if _, ok := isCoil(0, "Plain", nil, 1000); ok {
 		t.Error("a plain body should not be a coil")
+	}
+}
+
+// magnetHost is a fake whose single body is an axially-magnetised permanent magnet: a ring
+// cross-section named so isMagnet treats it as a magnet.
+func magnetHost() *fakeHost {
+	h := ringHost()
+	h.bodies = []wire.BodyInfo{{Index: 0, Name: "Magnet1", Solid: true, Key: "m0"}}
+	return h
+}
+
+// TestMagnetStudy checks a permanent-magnet body is recognised, builds magnetic surface
+// charges, and the study reports it with a non-zero on-axis field.
+func TestMagnetStudy(t *testing.T) {
+	res, err := NewEngine(magnetHost()).RunStudy(0)
+	if err != nil {
+		t.Fatalf("RunStudy: %v", err)
+	}
+	if res.MagnetCount != 1 || res.CoilCount != 0 || res.ElectrodeCount != 0 {
+		t.Errorf("counts = (e=%d,c=%d,m=%d), want (0,0,1)", res.ElectrodeCount, res.CoilCount, res.MagnetCount)
+	}
+}
+
+// TestBuildMagnetCharges checks an axially-magnetised magnet produces non-zero magnetostatic
+// surface charges (n_z·M is non-zero on the end caps).
+func TestBuildMagnetCharges(t *testing.T) {
+	prof, err := NewEngine(magnetHost()).extractProfile(0)
+	if err != nil {
+		t.Fatalf("extractProfile: %v", err)
+	}
+	mc := buildMagnetCharges([]magnet{{prof: prof, magnetisation: 1e6}})
+	nonzero := false
+	for _, c := range mc.Charges {
+		if c != 0 {
+			nonzero = true
+		}
+	}
+	if !nonzero {
+		t.Error("expected non-zero magnetic surface charges from an axial magnet")
+	}
+}
+
+// TestMagnetByAttribute checks the traceon/magnets attribute marks a body as a magnet.
+func TestMagnetByAttribute(t *testing.T) {
+	m, ok := isMagnet(2, "Block", map[int]float64{2: 5e5}, 1e6)
+	if !ok || m != 5e5 {
+		t.Errorf("isMagnet(attr) = (%v, %v), want (5e5, true)", m, ok)
 	}
 }
 

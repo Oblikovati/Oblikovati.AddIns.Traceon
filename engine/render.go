@@ -22,19 +22,27 @@ const potentialGrid = 40
 // renderNodes assembles the study overlay (all coordinates in the host DB unit, cm): the
 // potential heatmap (drawn underneath), the electrode and coil profiles, and the traced
 // trajectories. The BEM field and the rays are in metres, so positions are scaled by metresToCm.
-func renderNodes(electrodes []electrode, coils []coil, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
+func renderNodes(electrodes []electrode, coils []coil, magnets []magnet, bem field.FieldRadialBEM, rays [][]tracing.State) []wire.GraphicsNode {
 	var nodes []wire.GraphicsNode
 	if len(electrodes) > 0 {
 		nodes = append(nodes, potentialNode(electrodes, bem), electrodeNode(electrodes))
 	}
 	if lines, ok := coilNode(coils); ok {
-		nodes = append(nodes, wire.GraphicsNode{Id: "traceon.coils", Primitives: []wire.GraphicsPrimitive{{
-			Kind: string(types.GraphicsLines), Coordinates: lines.coords, Indices: lines.indices,
-			Color: []float32{0.85, 0.45, 0.2, 1}, OnTop: true, // copper
-		}}})
+		nodes = append(nodes, outlineNode("traceon.coils", lines, []float32{0.85, 0.45, 0.2, 1})) // copper
+	}
+	if lines, ok := magnetNode(magnets); ok {
+		nodes = append(nodes, outlineNode("traceon.magnets", lines, []float32{0.6, 0.3, 0.8, 1})) // violet
 	}
 	nodes = append(nodes, trajectoryNodes(rays)...)
 	return nodes
+}
+
+// outlineNode wraps accumulated (r,z) line segments into an on-top coloured graphics node.
+func outlineNode(id string, lines graphicsLines, color []float32) wire.GraphicsNode {
+	return wire.GraphicsNode{Id: id, Primitives: []wire.GraphicsPrimitive{{
+		Kind: string(types.GraphicsLines), Coordinates: lines.coords, Indices: lines.indices,
+		Color: color, OnTop: true,
+	}}}
 }
 
 // pushGraphics replaces the study client-graphics group with the supplied nodes.
