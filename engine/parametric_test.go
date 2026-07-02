@@ -149,8 +149,11 @@ func TestNotifyEinzelCommandRunsParametric(t *testing.T) {
 
 	ev, _ := json.Marshal(map[string]string{"type": wire.EventCommandStarted, "command": EinzelLensCommandID})
 	e.Notify(ev)
-	// launchStudy runs on a goroutine; wait for it to settle.
-	for i := 0; i < 200; i++ {
+	// launchStudy runs on a goroutine; wait for it to settle. The deadline is generous because the
+	// race detector slows the study past a 2s cap (flaked in CI); the loop exits as soon as the
+	// overlay lands, so passing runs never wait it out.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
 		e.mu.Lock()
 		done := !e.running && e.params.lens == lensEinzel
 		e.mu.Unlock()
