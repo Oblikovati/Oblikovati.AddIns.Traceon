@@ -16,5 +16,5 @@ go 1.24.0
 
 require (
 	gonum.org/v1/gonum v0.17.0 // pure-Go dense linalg, wrapped behind core/linalg
-	oblikovati.org/api v0.109.0
+	oblikovati.org/api v0.111.0
 )
