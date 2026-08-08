@@ -7,6 +7,8 @@ name: Release
 #   3. commits the bumped go.mod pin back to the default branch, so the repo always
 #      reflects the API release the bridge is built against.
 # It is idempotent: a run for an API release that already shipped is a no-op.
+# Publishing the bundles to the add-in catalogue is a separate terminal job (`catalogue`)
+# that never gates the release — see the comment on that job.
 on:
   schedule:
     - cron: "0 * * * *" # top of every hour
@@ -80,7 +82,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: "1"
-      ADDINS_PUBLISH_TOKEN: ${{ secrets.ADDINS_PUBLISH_TOKEN }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -90,15 +91,10 @@ jobs:
       - uses: ./.github/actions/siblings
         with:
           api-ref: ${{ needs.check.outputs.api_tag }}
-      - name: Build and publish per-platform bundles
+      - name: Build per-platform bundles
         # macOS builds BOTH arches — darwin-amd64 is cross-compiled on the arm64 runner (the
-        # macOS toolchain is universal), so Intel Macs are covered without the slow Intel
-        # runner. Each bundle publishes when ADDINS_PUBLISH_TOKEN is set; api major.minor from
-        # the tracked API release (api-vX.Y.Z -> X.Y).
+        # macOS toolchain is universal), so Intel Macs are covered without an Intel runner.
         shell: bash
-        env:
-          ADDINS_PUBLISH_URL: ${{ secrets.ADDINS_PUBLISH_URL }}
-          API_TAG: ${{ needs.check.outputs.api_tag }}
         run: |
           set -euo pipefail
           case "$RUNNER_OS" in
@@ -109,14 +105,9 @@ jobs:
               case "$a" in x86_64|amd64) a=amd64 ;; aarch64|arm64) a=arm64 ;; esac
               targets="linux-$a" ;;
           esac
-          api="${API_TAG#v}"; api="${api%.*}"
           mkdir -p dist
           for plat in $targets; do
-            lib="dist/oblikovati-traceon-$plat.$ext"
-            GOARCH="${plat##*-}" go build -buildmode=c-shared -o "$lib" .
-            if [ -n "${ADDINS_PUBLISH_TOKEN:-}" ]; then
-              scripts/publish-catalogue.sh "$plat" "$lib" "$api"
-            fi
+            GOARCH="${plat##*-}" go build -buildmode=c-shared -o "dist/oblikovati-traceon-$plat.$ext" .
           done
           cp manifest.json dist/manifest.json
       - uses: actions/upload-artifact@v6
@@ -145,6 +136,52 @@ jobs:
             -R "$GITHUB_REPOSITORY" \
             --title "Traceon — API $API_TAG" \
             --notes "Auto-built oblikovati-traceon against oblikovati.org/api $API_TAG. Artifacts: c-shared library per OS + manifest.json."
+
+  # Publish the built bundles to the add-in catalogue. This is a TERMINAL job on purpose:
+  # nothing depends on it, so a catalogue outage, an unprovisioned token or a rejected bundle
+  # cannot stop the GitHub release from shipping.
+  #
+  # It used to run inside `build`, where a 401 from the catalogue failed the build and so
+  # blocked the release itself. Because `check` only short-circuits once the release EXISTS,
+  # the hourly schedule then retried the same failure indefinitely — two add-ins sat broken
+  # for a month that way. Cutting the release first ends that loop: the next run finds the
+  # release and no-ops. A publish that fails here is retried on its own with "Re-run failed
+  # jobs" on this run, without cutting a new release.
+  catalogue:
+    needs: [check, build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish bundles to the catalogue
+        env:
+          ADDINS_PUBLISH_TOKEN: ${{ secrets.ADDINS_PUBLISH_TOKEN }}
+          ADDINS_PUBLISH_URL: ${{ secrets.ADDINS_PUBLISH_URL }}
+          API_TAG: ${{ needs.check.outputs.api_tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADDINS_PUBLISH_TOKEN:-}" ]; then
+            echo "::notice::ADDINS_PUBLISH_TOKEN is not set — skipping the catalogue publish."
+            exit 0
+          fi
+          api="${API_TAG#v}"; api="${api%.*}"
+          shopt -s nullglob
+          # The c-shared build emits a .h beside each library, so match the library extensions
+          # explicitly rather than globbing everything the build job uploaded.
+          libs=(dist/oblikovati-traceon-*.so dist/oblikovati-traceon-*.dylib dist/oblikovati-traceon-*.dll)
+          if [ ${#libs[@]} -eq 0 ]; then
+            echo "no built libraries in dist/ — the build job uploaded nothing to publish" >&2
+            exit 1
+          fi
+          for lib in "${libs[@]}"; do
+            plat="${lib##*/oblikovati-traceon-}"
+            scripts/publish-catalogue.sh "${plat%.*}" "$lib" "$api"
+          done
 
   # Commit the bumped pin back, so the repo matches what shipped.
   sync:
