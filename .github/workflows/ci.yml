@@ -28,7 +28,12 @@ jobs:
       - uses: ./.github/actions/siblings
       - uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.0
+          # v2.1.0's release binary was built with go1.24, which refuses to lint a
+          # module targeting go1.27 ("Go language version used to build golangci-lint
+          # is lower than the targeted Go version"). v2.13.1 is the first release
+          # built with a go1.27 toolchain (matches the GOLANGCI_VERSION pin in the
+          # GPL Oblikovati repo's Makefile, kept consistent across the workspace).
+          version: v2.13.1
 
   # SPDX: every Go file in this MPL-2.0 repo must carry an MPL-2.0 identifier.
   spdx:
@@ -64,7 +69,11 @@ jobs:
           go-version-file: go.mod
           cache: false
       - uses: ./.github/actions/siblings
-      - run: go install gotest.tools/gotestsum@v1.12.0
+      # v1.12.0 pulls in golang.org/x/tools v0.19.0, whose internal/tokeninternal
+      # package fails to compile under the go1.27 toolchain ("invalid array length
+      # -delta * delta"). v1.12.3 is the first release with an x/tools new enough to
+      # build clean (v1.12.1/v1.12.2 still pull the broken x/tools v0.24.0).
+      - run: go install gotest.tools/gotestsum@v1.12.3
       - name: Test
         run: gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./core/... ./engine/... ./cmd/... ./validation/... ./gplpurity/...
       - uses: actions/upload-artifact@v6
