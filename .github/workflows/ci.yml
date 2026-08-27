@@ -69,13 +69,14 @@ jobs:
           go-version-file: go.mod
           cache: false
       - uses: ./.github/actions/siblings
-      # v1.12.0 pulls in golang.org/x/tools v0.19.0, whose internal/tokeninternal
-      # package fails to compile under the go1.27 toolchain ("invalid array length
-      # -delta * delta"). v1.12.3 is the first release with an x/tools new enough to
-      # build clean (v1.12.1/v1.12.2 still pull the broken x/tools v0.24.0).
-      - run: go install gotest.tools/gotestsum@v1.12.3
+      # gotestsum comes from this module's `tool` directive (go.mod), so its version
+      # is pinned by go.sum instead of a floating `go install pkg@version` (SonarCloud
+      # githubactions:S8545: unpinned CI dependency versions). v1.12.3 is also the
+      # first release whose golang.org/x/tools dependency compiles clean under the
+      # go1.27 toolchain (v1.12.0-v1.12.2 pull x/tools versions whose
+      # internal/tokeninternal package fails with "invalid array length -delta * delta").
       - name: Test
-        run: gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./core/... ./engine/... ./cmd/... ./validation/... ./gplpurity/...
+        run: go tool gotestsum --junitfile test-results-${{ matrix.os }}.xml -- -coverprofile=coverage.out -covermode=count ./core/... ./engine/... ./cmd/... ./validation/... ./gplpurity/...
       - uses: actions/upload-artifact@v6
         if: always()
         with:
