@@ -12,9 +12,9 @@
 // this repo's root (no committed replace); CI injects the equivalent replaces.
 module oblikovati.org/traceon
 
-go 1.24.0
+go 1.27.0
 
 require (
 	gonum.org/v1/gonum v0.17.0 // pure-Go dense linalg, wrapped behind core/linalg
-	oblikovati.org/api v0.151.1
+	oblikovati.org/api v0.153.1
 )
