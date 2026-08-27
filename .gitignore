@@ -43,3 +43,6 @@ __pycache__/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local git worktrees for isolated branch work (not part of the repo history).
+.worktrees/
