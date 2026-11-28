@@ -1,3 +1,5 @@
+//go:build cgo
+
 // SPDX-License-Identifier: MPL-2.0
 
 // Command oblikovati-traceon is built as a c-shared library (.so/.dll) and loaded by

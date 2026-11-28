@@ -124,3 +124,25 @@ jobs:
         with:
           name: oblikovati-traceon-${{ matrix.os }}
           path: build/oblikovati-traceon.*
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    env:
+      GOOS: js
+      GOARCH: wasm
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/siblings
+      - name: Build js-wasm add-in
+        run: |
+          mkdir -p build
+          go build -o build/oblikovati-traceon.wasm .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: oblikovati-traceon-js-wasm
+          path: build/oblikovati-traceon.wasm
